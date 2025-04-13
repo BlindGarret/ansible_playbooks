@@ -1,0 +1,11 @@
+k8sControllers:
+  hosts:
+    control:
+      ansible_host: 192.168.0.103
+
+k8sNodes:
+  hosts:
+    node-01:
+      ansible_host: 192.168.0.104
+    node-02:
+      ansible_host: 192.168.0.105

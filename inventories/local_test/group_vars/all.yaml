@@ -1,0 +1,6 @@
+# Jumpbox Variables
+# These playbooks assume a jumpbox which is able to connect to the hosts.
+# Playbooks exist to setup the jumpbox access.
+
+jb_username: roeden-jumpbox
+jb_ssh_key_name: roeden-jumpbox

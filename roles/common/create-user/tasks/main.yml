@@ -1,0 +1,56 @@
+#SPDX-License-Identifier: MIT-0
+---
+# tasks file for create-user
+
+
+- name: Generate SSH key pair
+  delegate_to: localhost
+  community.crypto.openssh_keypair:
+    type: ed25519
+    state: present
+    path: ~/.ssh/{{ ssh_key_name }}
+    comment: "Ansible SSH key"
+    force: no
+  when: ssh_key_name is defined
+
+- name: Adding key to SSH Config
+  delegate_to: localhost
+  ansible.builtin.blockinfile:
+    path: ~/.ssh/config
+    create: true
+    marker: "# {mark} ANSIBLE JUMPBOX SSH CONFIG"
+    prepend_newline: true
+    block: |
+      Host *
+        IgnoreUnknown UseKeychain
+        AddKeysToAgent yes
+        UseKeychain yes
+        IdentityFile ~/.ssh/{{ ssh_key_name }}
+  when: ssh_key_name is defined
+
+- name: Create user
+  ansible.builtin.user:
+    name: "{{ username }}"
+    append: true
+    state: present
+    createhome: true
+    groups: "{{ sudoers_group if is_sudoer else '!' }}"
+    password: "{{ password if password is defined else '' }}"
+    shell: /bin/bash
+  become: true
+
+- name: Allow User To Sudo without Password
+  ansible.builtin.lineinfile:
+    dest: /etc/sudoers
+    line: "{{ username }} ALL=(ALL) NOPASSWD: ALL"
+    validate: 'visudo -cf %s'
+  become: true
+  when: is_sudoer and skip_sudoer_password
+
+- name: Set Authorized Keys for User
+  ansible.posix.authorized_key:
+    user: "{{ username }}"
+    key: "{{ item }}"
+  become: true
+  with_file:
+    - ~/.ssh/{{ ssh_key_name }}.pub

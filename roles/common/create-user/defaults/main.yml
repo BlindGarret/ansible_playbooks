@@ -1,0 +1,7 @@
+#SPDX-License-Identifier: MIT-0
+---
+# defaults file for create-user
+
+is_sudoer: false
+skip_sudoer_password: false
+

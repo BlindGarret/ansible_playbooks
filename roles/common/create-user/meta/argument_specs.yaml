@@ -1,0 +1,40 @@
+argument_specs:
+  # roles/common/create-user/main.yml
+  main:
+    short_description: Create a user on the host
+    description:
+      - This role creates a user on the host
+      - it can create it with or without a sudoer password and with or without sudoer privileges
+      - it can also create it with or without a password/ssh-key
+    author:
+      - BlindGarret
+    options:
+      username:
+        description:
+          - The name of the user to create
+        required: true
+        type: str
+      password:
+        description:
+          - The password of the user to create
+        required: false
+        type: str
+      ssh_key_name:
+        description:
+          - The name of the ssh key to assign to this user locally
+          - If set, the key will be copied to the remote host
+          - If the key is not found, it will be created
+        required: false
+        type: str
+      is_sudoer:
+        description:
+          - Whether the user should be a sudoer or not
+        required: false
+        default: false
+        type: bool
+      skip_sudoer_password:
+        description:
+          - Whether the user should have a sudoer password or not
+        default: false
+        required: false
+        type: bool
