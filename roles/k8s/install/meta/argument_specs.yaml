@@ -1,0 +1,36 @@
+argument_specs:
+  main:
+    short_description: Installs K8s
+    description:
+      - This role installs K8s on the hosts
+      - It performs all necessary setup steps and configurations pre-install
+      - It currently uses CRIO as the container runtime
+    author:
+      - BlindGarret
+    options:
+      portmap_version:
+        description:
+          - The version of the portmap plugin to install
+          - This will be downloaded from the github release page in the form "https://github.com/containernetworking/plugins/releases/download/v{version}/cni-plugins-linux-amd64-{version}.tgz"
+        required: false
+        default: 1.6.2
+        type: str
+      portmap_override_url:
+        description:
+          - The url to the portmap plugin to install
+          - This will be downloaded from the url provided
+          - This will override the portmap_version parameter
+        required: false
+        type: str
+      crio_version:
+        description:
+          - This is the version of CRI-O to install with K8s
+          - This version should follow the rules for drift from the k8s drift policy
+          - At time of writing this is 3 minor versions, but read requirements before updating.
+        required: true
+        type: str
+      k8s_version:
+        description:
+          - This is the version of kubernetes to install
+        required: true
+        type: str

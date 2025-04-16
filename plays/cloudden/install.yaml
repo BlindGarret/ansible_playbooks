@@ -1,0 +1,64 @@
+# Setup the CloudDen System
+
+# Install nice to have tools
+- hosts: all
+  remote_user: "{{ jb_username }}"
+  roles:
+    - role: ../../roles/common/install_package
+      packages: 
+        - jq
+        - vim-enhanced
+        - curl
+        - git
+
+
+# Install K8s
+- hosts: all
+  remote_user: "{{ jb_username }}"
+  roles:
+    - role: ../../roles/k8s/install
+      portmap_version: "{{ cloudden_portmap_version }}"
+      crio_version: "{{ cloudden_crio_version }}"
+      k8s_version: "{{ cloudden_k8s_version }}"
+      become: true
+      become_method: sudo
+     
+- hosts: k8sControllers
+  remote_user: "{{ jb_username }}"
+  roles:
+    - role: ../../roles/k8s/kubeadm_init
+      become: true
+      become_method: sudo
+    - role: ../../roles/helm/install
+      helm_diff_version: "{{ cloudden_helm_diff_version }}"
+      helm_version: "{{ cloudden_helm_version }}"
+      become: true
+      become_method: sudo
+    - role: ../../roles/k8s/calico
+      calico_chart_version: "{{ cloudden_calico_chart_version }}"
+    - role: ../../roles/k8s/fetch_kubeconfig
+    - role: ../../roles/k8s/get_join_token
+      become: true
+      become_method: sudo
+
+- hosts: k8sNodes
+  remote_user: "{{ jb_username }}"
+  roles:
+    - role: ../../roles/k8s/join_node
+      become: true
+      become_method: sudo
+
+- hosts: k8sControllers
+  remote_user: "{{ jb_username }}"
+  roles:
+    - role: ../../roles/k8s/coredns_restart
+      become: true
+      become_method: sudo
+ 
+
+
+# Create Self Signed Cert
+
+# ArgoCD
+
+# Setup Catalog

@@ -1,0 +1,74 @@
+- name: Setup CRI-O Repos
+  block:
+    - name: Remove old CRI-O repo files
+      ansible.builtin.file:
+        path: /etc/yum.repos.d/crio.repo
+        state: absent
+
+    - name: Remove old K8s repo files
+      ansible.builtin.file:
+        path: /etc/yum.repos.d/k8s.repo
+        state: absent
+
+    - name: Add CRI-O Repo File
+      ansible.builtin.copy:
+        dest: '/etc/yum.repos.d/crio.repo'
+        content: |
+          [cri-o]
+          name=CRI-O
+          baseurl=https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{crio_version}}/rpm/
+          enabled=1
+          gpgcheck=1
+          gpgkey=https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{crio_version}}/rpm/repodata/repomd.xml.key
+          exclude=cri-o containernetworking-plugins container-selinux
+        mode: '0644'
+        follow: yes
+      changed_when: true
+
+    - name: Add K8s Repo File
+      ansible.builtin.copy:
+        dest: '/etc/yum.repos.d/k8s.repo'
+        content: |
+          [kubernetes]
+          name=Kubernetes
+          baseurl=https://pkgs.k8s.io/core:/stable:/v{{k8s_version}}/rpm/
+          enabled=1
+          gpgcheck=1
+          gpgkey=https://pkgs.k8s.io/core:/stable:/v{{k8s_version}}/rpm/repodata/repomd.xml.key
+          exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
+        mode: '0644'
+        follow: yes
+      changed_when: true
+
+- name: Install and Start Services
+  block: 
+    - name: Install CRI-O
+      ansible.builtin.yum:
+        name: 
+          - container-selinux 
+          - cri-o
+          - containernetworking-plugins
+        disable_excludes: all
+        state: present
+
+    - name: Enable and Start CRI-O
+      ansible.builtin.systemd:
+        name: crio
+        state: started
+        enabled: true
+
+    - name: Install K8s
+      ansible.builtin.yum:
+        name: 
+          - kubelet
+          - kubeadm
+          - kubectl
+        disable_excludes: all
+        state: present
+
+    - name: Enable and Start Kubelet
+      ansible.builtin.systemd:
+        name: kubelet
+        state: started
+        enabled: true
+  

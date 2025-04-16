@@ -1,0 +1,21 @@
+#SPDX-License-Identifier: MIT-0
+---
+# tasks file for join_node
+
+- name: register status of /etc/kubernetes/pki/ca.crt
+  stat:
+    path: /etc/kubernetes/pki/ca.crt
+  register: k8s_join_file
+
+- name: Join K8s
+  when: "not k8s_join_file.stat.exists"
+  ansible.builtin.command:
+   cmd: "{{ hostvars['K8S_JOIN_COMMAND']['cmd'] }}"
+   creates: /etc/kubernetes/pki/ca.crt
+  changed_when: true
+
+- name: Wait 10 minute for safety (Network has to stand up)
+  ansible.builtin.pause:
+    minutes: 10
+  when: "not k8s_join_file.stat.exists"
+

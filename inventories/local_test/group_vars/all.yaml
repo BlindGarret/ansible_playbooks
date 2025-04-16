@@ -4,3 +4,15 @@
 
 jb_username: roeden-jumpbox
 jb_ssh_key_name: roeden-jumpbox
+
+# CloudDen
+cloudden_k8s_version: "1.32"
+cloudden_crio_version: "1.32"
+cloudden_portmap_version: "1.6.2"
+cloudden_helm_version: "3.17.3"
+cloudden_helm_diff_version: "3.11.0"
+cloudden_calico_chart_version: "3.28.4"
+
+# Argo
+argocd_version: "2.8.1"
+service_catalog_git_url: ""

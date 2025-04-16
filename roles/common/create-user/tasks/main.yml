@@ -34,7 +34,7 @@
     append: true
     state: present
     createhome: true
-    groups: "{{ sudoers_group if is_sudoer else '!' }}"
+    groups: "{{ sudoers_group if is_sudoer else '' }}"
     password: "{{ password if password is defined else '' }}"
     shell: /bin/bash
   become: true
@@ -54,3 +54,4 @@
   become: true
   with_file:
     - ~/.ssh/{{ ssh_key_name }}.pub
+  when: ssh_key_name is defined

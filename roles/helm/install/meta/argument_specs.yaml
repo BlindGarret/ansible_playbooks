@@ -1,0 +1,18 @@
+argument_specs:
+  main:
+    short_description: Installs Helm
+    description:
+      - Install Helm tooling to host
+      - Also install HelmDiff as a kubernetes plugin
+    author:
+      - BlindGarret
+    options:
+      helm_version:
+        description:
+          - The version of helm to install
+        required: true
+        type: str
+      helm_diff_version:
+        description:
+          - The release of helmdiff to install
+        type: str

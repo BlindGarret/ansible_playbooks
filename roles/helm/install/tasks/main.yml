@@ -1,0 +1,52 @@
+#SPDX-License-Identifier: MIT-0
+---
+# tasks file for install
+
+
+- name: Install Helm
+  unarchive:
+    src: "https://get.helm.sh/helm-v{{helm_version}}-linux-amd64.tar.gz"
+    dest: /usr/bin
+    extra_opts: "--strip-components=1"
+    owner: root
+    group: root
+    mode: 0755
+    remote_src: true
+  args:
+    creates: /usr/bin/helm
+
+- name: Install python3 and pip3
+  ansible.builtin.yum:
+    name:
+      - python3
+      - python3-pip
+    disable_excludes: all
+    state: present
+
+- name: Install PyYaml
+  ansible.builtin.pip:
+    name: PyYAML
+    executable: pip3
+
+- name: Install Python K8s
+  ansible.builtin.pip:
+    name: kubernetes
+    executable: pip3
+
+- name: Install jsonpatch
+  ansible.builtin.pip:
+    name: jsonpatch
+    executable: pip3
+
+- name: Install git
+  ansible.builtin.yum:
+    name:
+      - git
+    disable_excludes: all
+    state: present
+
+- name: Install Helm Diff
+  kubernetes.core.helm_plugin:
+    plugin_path: "https://github.com/databus23/helm-diff"
+    plugin_version: "{{helm_diff_version}}"
+    state: present
