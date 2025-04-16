@@ -1,0 +1,24 @@
+- hosts: k8sControllers
+  remote_user: "{{ jb_username }}"
+  roles:
+    - role: ../../roles/certs/ca_create
+      ca_c: "{{ sscert_C }}"
+      ca_st: "{{ sscert_ST }}"
+      ca_l: "{{ sscert_L }}"
+      ca_o: "{{ sscert_O }}"
+      ca_ou: "{{ sscert_OU }}"
+      ca_cn: "{{ sscert_CN }}"
+      secret_name: internal-nginx-ca-secret
+      secret_namespace: internal-nginx-ca-issuer
+    - role: ../../roles/certs/output_ca
+      cert_name: "{{ sscert_name }}"
+      secret_name: internal-nginx-ca-secret
+      secret_namespace: internal-nginx-ca-issuer
+    
+- hosts: k8sControllers, k8sNodes
+  remote_user: "{{ jb_username }}"
+  roles:
+    - role: ../../roles/certs/ca_trust
+      cert_name: "{{ sscert_name }}"
+      become: true
+      become_method: sudo

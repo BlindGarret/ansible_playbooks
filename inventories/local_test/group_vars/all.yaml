@@ -12,6 +12,16 @@ cloudden_portmap_version: "1.6.2"
 cloudden_helm_version: "3.17.3"
 cloudden_helm_diff_version: "3.11.0"
 cloudden_calico_chart_version: "3.28.4"
+cloudden_repo: "https://github.com/BlindGarret/cloudden.git"
+
+# Self Signed Cert
+sscert_name: cloudden
+sscert_C: ""
+sscert_ST: ""
+sscert_L: ""
+sscert_O: CloudDen
+sscert_OU: BlindGarret
+sscert_CN: cloudden.corp
 
 # Argo
 argocd_version: "2.8.1"

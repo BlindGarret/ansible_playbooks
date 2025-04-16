@@ -1,0 +1,23 @@
+argument_specs:
+  main:
+    short_description: Output a CA
+    description:
+      - Reads the CA from kubernets and outputs it to the ansible outputs dir.
+    author:
+      - BlindGarret
+    options:
+      cert_name:
+        description:
+          - The name of the cert to add
+        required: true
+        type: str
+      secret_name:
+        description:
+          - The name of the secret to read the cert from
+        required: true
+        type: str
+      secret_namespace:
+        description:
+          - The namespace to read the secret from
+        required: true
+        type: str

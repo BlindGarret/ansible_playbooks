@@ -1,0 +1,49 @@
+#SPDX-License-Identifier: MIT-0
+---
+# tasks file for output_admin_secret
+
+- name: Get initial admin secret
+  ansible.builtin.shell:
+    cmd: kubectl get secret --namespace='{{ argo_namespace | default('argo-cd') }}' argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+  register: init_admin_secret
+  environment:
+    KUBECONFIG: "/home/{{ansible_ssh_user}}/.kube/config"
+  
+- name: Create output file
+  ansible.builtin.copy:
+    content: "{{ init_admin_secret.stdout }}"
+    dest: "/home/{{ansible_ssh_user}}/argocd_init_secret.txt"
+
+- name: Ensures dir exists
+  delegate_to: localhost
+  file: 
+    path: "~/ansible_outputs"
+    state: directory
+
+- name: Fetch files
+  ansible.builtin.fetch:
+    src: /home/{{ansible_ssh_user}}/argocd_init_secret.txt
+    dest: ~/fetched
+
+- name: Remove old file
+  delegate_to: localhost
+  ansible.builtin.file:
+    path: ~/ansible_outputs/argocd_init_secret.txt
+    state: absent
+
+- name: Move the file
+  delegate_to: localhost
+  ansible.builtin.shell:
+    cmd: mv ~/fetched/{{ ansible_hostname }}/home/{{ ansible_ssh_user }}/argocd_init_secret.txt ~/ansible_outputs/argocd_init_secret.txt
+  changed_when: true
+
+- name: Remove temp file
+  ansible.builtin.file:
+    path: "/home/{{ansible_ssh_user}}/argocd_init_secret.txt"
+    state: absent
+
+- name: Remove fetched directory
+  delegate_to: localhost
+  ansible.builtin.file:
+    path: ~/fetched
+    state: absent

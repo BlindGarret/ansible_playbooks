@@ -1,0 +1,78 @@
+#SPDX-License-Identifier: MIT-0
+---
+# tasks file for output_ca
+
+- name: Get CA Crt Secret
+  ansible.builtin.shell:
+    cmd: "kubectl get secret {{ secret_name }} -n {{ secret_namespace }} -o jsonpath='{.data}' | jq -r '.\"tls.crt\"' | base64 -d"
+  register: ca_crt_from_secret
+  environment:
+    KUBECONFIG: "/home/{{ansible_ssh_user}}/.kube/config"
+
+- name: Get CA Key Secret
+  ansible.builtin.shell:
+    cmd: "kubectl get secret {{ secret_name }} -n {{ secret_namespace }} -o jsonpath='{.data}' | jq -r '.\"tls.key\"' | base64 -d"
+  register: ca_key_from_secret
+  environment:
+    KUBECONFIG: "/home/{{ansible_ssh_user}}/.kube/config"
+
+- name: Create crt file
+  ansible.builtin.copy:
+    content: "{{ ca_crt_from_secret.stdout }}"
+    dest: "/home/{{ansible_ssh_user}}/{{ cert_name }}.crt"
+
+- name: Create key file
+  ansible.builtin.copy:
+    content: "{{ ca_key_from_secret.stdout }}"
+    dest: "/home/{{ansible_ssh_user}}/{{ cert_name }}.key"
+
+- name: Fetch files
+  ansible.builtin.fetch:
+    src: /home/{{ansible_ssh_user}}/{{ item }}
+    dest: ~/fetched
+  loop:
+    - "{{ cert_name }}.crt"
+    - "{{ cert_name }}.key"
+
+- name: Ensures dir exists
+  delegate_to: localhost
+  file: 
+    path: "~/ansible_outputs"
+    state: directory
+
+- name: Remove old cert files
+  delegate_to: localhost
+  ansible.builtin.file:
+    path: ~/ansible_outputs/{{ item }}
+    state: absent
+  loop:
+    - "{{ cert_name }}.crt"
+    - "{{ cert_name }}.key"
+
+- name: Move the cert files
+  delegate_to: localhost
+  ansible.builtin.shell:
+   cmd: mv ~/fetched/{{ ansible_hostname }}/home/{{ ansible_ssh_user }}/{{ item }} ~/ansible_outputs/{{ item }}
+  changed_when: true
+  loop:
+    - "{{ cert_name }}.crt"
+    - "{{ cert_name }}.key"
+
+- name: Remove fetched directory
+  delegate_to: localhost
+  ansible.builtin.file:
+    path: ~/fetched
+    state: absent
+
+- name: Remove temp cert files
+  ansible.builtin.file:
+    path: /home/{{ansible_ssh_user}}/{{ item }}
+    state: absent
+  loop:
+    - "{{ cert_name }}.crt"
+    - "{{ cert_name }}.key"
+
+- name: "Add CA CRT to dummy host"
+  ansible.builtin.add_host:
+   name: "CA_CRT"
+   cmd: "{{ ca_crt_from_secret.stdout }}"

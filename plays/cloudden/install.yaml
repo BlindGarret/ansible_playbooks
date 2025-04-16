@@ -10,6 +10,7 @@
         - vim-enhanced
         - curl
         - git
+        - nfs-utils
 
 
 # Install K8s
@@ -58,7 +59,99 @@
 
 
 # Create Self Signed Cert
+- hosts: k8sControllers
+  remote_user: "{{ jb_username }}"
+  roles:
+    - role: ../../roles/certs/ca_create
+      ca_c: "{{ sscert_C }}"
+      ca_st: "{{ sscert_ST }}"
+      ca_l: "{{ sscert_L }}"
+      ca_o: "{{ sscert_O }}"
+      ca_ou: "{{ sscert_OU }}"
+      ca_cn: "{{ sscert_CN }}"
+      secret_name: internal-nginx-ca-secret
+      secret_namespace: internal-nginx-ca-issuer
+    - role: ../../roles/certs/output_ca
+      cert_name: "{{ sscert_name }}"
+      secret_name: internal-nginx-ca-secret
+      secret_namespace: internal-nginx-ca-issuer
+    
+- hosts: k8sControllers, k8sNodes
+  remote_user: "{{ jb_username }}"
+  roles:
+    - role: ../../roles/certs/ca_trust
+      cert_name: "{{ sscert_name }}"
+      become: true
+      become_method: sudo
 
 # ArgoCD
+- hosts: k8sControllers
+  remote_user: "{{ jb_username }}"
+  roles:
+    - role: ../../roles/helm/chart_install
+      chart_repo: "{{ cloudden_repo }}"
+      chart_loc: "/core/charts/metallb"
+      app_name: "metallb"
+      namespace: "metallb"
+      post_install_delay: 3
+      namespace_labels:
+        pod-security.kubernetes.io/enforce: privileged
+        pod-security.kubernetes.io/audit: privileged
+        pod-security.kubernetes.io/warn: privileged
+        app.kubernetes.io/managed-by: Helm
+      namespace_annotations:
+        meta.helm.sh/release-name: service-catalog
+        meta.helm.sh/release-namespace: argo-cd
+      become: true
+      become_method: sudo
+    - role: ../../roles/helm/chart_install
+      chart_repo: "{{ cloudden_repo }}"
+      chart_loc: "/core/charts/certmanager"
+      app_name: "cert-manager"
+      namespace: "cert-manager"
+      post_install_delay: 1
+      namespace_labels:
+        pod-security.kubernetes.io/enforce: privileged
+        pod-security.kubernetes.io/audit: privileged
+        pod-security.kubernetes.io/warn: privileged
+        app.kubernetes.io/managed-by: Helm
+      namespace_annotations:
+        meta.helm.sh/release-name: service-catalog
+        meta.helm.sh/release-namespace: argo-cd
+      become: true
+      become_method: sudo
+    - role: ../../roles/helm/chart_install
+      chart_repo: "{{ cloudden_repo }}"
+      chart_loc: "/core/charts/internal-ingress"
+      app_name: "ingress-nginx-internal"
+      namespace: "ingress-nginx-internal"
+      post_install_delay: 2
+      namespace_labels:
+        pod-security.kubernetes.io/enforce: privileged
+        pod-security.kubernetes.io/audit: privileged
+        pod-security.kubernetes.io/warn: privileged
+        app.kubernetes.io/managed-by: Helm
+      namespace_annotations:
+        meta.helm.sh/release-name: service-catalog
+        meta.helm.sh/release-namespace: argo-cd
+      become: true
+      become_method: sudo 
+    - role: ../../roles/helm/chart_install
+      chart_repo: "{{ cloudden_repo }}"
+      chart_loc: "/core/charts/argo-cd"
+      app_name: "argo-cd"
+      namespace: "argo-cd"
+      post_install_delay: 1
+      namespace_labels:
+        pod-security.kubernetes.io/enforce: privileged
+        pod-security.kubernetes.io/audit: privileged
+        pod-security.kubernetes.io/warn: privileged
+        app.kubernetes.io/managed-by: Helm
+      namespace_annotations:
+        meta.helm.sh/release-name: service-catalog
+        meta.helm.sh/release-namespace: argo-cd
+      become: true
+      become_method: sudo
+    - role: ../../roles/argocd/output_admin_secret
 
 # Setup Catalog
