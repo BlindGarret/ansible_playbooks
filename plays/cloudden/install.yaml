@@ -70,11 +70,11 @@
       ca_ou: "{{ sscert_OU }}"
       ca_cn: "{{ sscert_CN }}"
       secret_name: internal-nginx-ca-secret
-      secret_namespace: internal-nginx-ca-issuer
+      secret_namespace: cert-manager
     - role: ../../roles/certs/output_ca
       cert_name: "{{ sscert_name }}"
       secret_name: internal-nginx-ca-secret
-      secret_namespace: internal-nginx-ca-issuer
+      secret_namespace: cert-manager
     
 - hosts: k8sControllers, k8sNodes
   remote_user: "{{ jb_username }}"
@@ -153,5 +153,18 @@
       become: true
       become_method: sudo
     - role: ../../roles/argocd/output_admin_secret
+    - role: ../../roles/helm/chart_install
+      chart_repo: "{{ cloudden_repo }}"
+      chart_loc: "/service-catalog/chart"
+      app_name: "service-catalog"
+      namespace: "argo-cd"
+      post_install_delay: 1
+      namespace_labels:
+        pod-security.kubernetes.io/enforce: privileged
+        pod-security.kubernetes.io/audit: privileged
+        pod-security.kubernetes.io/warn: privileged
+        app.kubernetes.io/managed-by: Helm
+      namespace_annotations:
+        meta.helm.sh/release-name: service-catalog
+        meta.helm.sh/release-namespace: argo-cd
 
-# Setup Catalog
