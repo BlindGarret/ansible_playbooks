@@ -9,3 +9,8 @@ k8sNodes:
       ansible_host: 192.168.0.104
     node-02:
       ansible_host: 192.168.0.105
+
+gitbox:
+  hosts:
+    gitbox:
+      ansible_host: 192.168.0.72

@@ -2,4 +2,4 @@
 ---
 # vars file for create-user
 
-sudoers_group: wheel
+sudoers_group: sudo

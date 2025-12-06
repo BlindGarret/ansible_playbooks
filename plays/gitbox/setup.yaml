@@ -1,0 +1,7 @@
+- hosts: gitbox
+  remote_user: "{{ jb_username }}"
+  roles:
+    - role: ../../roles/docker/install_docker
+      username: "{{ jb_username }}"
+      become: true
+      become_method: sudo
