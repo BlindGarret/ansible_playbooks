@@ -1,0 +1,12 @@
+- name: Install k3s server
+  shell: |
+    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ k3s_version }}" sh -s - server
+  args:
+    executable: /bin/bash
+    creates: /usr/local/bin/k3s
+
+- name: Enable and start k3s
+  systemd:
+    name: k3s
+    enabled: true
+    state: started

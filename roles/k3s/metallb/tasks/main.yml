@@ -1,0 +1,26 @@
+---
+- name: Install MetalLB (native manifests)
+  shell: |
+    set -euo pipefail
+    kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/{{ metallb_version }}/config/manifests/metallb-native.yaml
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Wait for MetalLB controller rollout
+  shell: |
+    set -euo pipefail
+    kubectl -n metallb-system rollout status deploy/controller --timeout=180s
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: Render MetalLB pool config
+  template:
+    src: metallb-pool.yaml.j2
+    dest: /tmp/metallb-pool.yaml
+    mode: "0644"
+
+- name: Apply MetalLB pool config
+  command: kubectl apply -f /tmp/metallb-pool.yaml
+  changed_when: false

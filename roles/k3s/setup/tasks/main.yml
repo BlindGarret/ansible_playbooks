@@ -1,0 +1,18 @@
+- name: Ensure config dir
+  file:
+    path: /etc/rancher/k3s
+    state: directory
+    mode: "0755"
+
+- name: Render k3s config.yaml
+  template:
+    src: k3s-config.yaml.j2
+    dest: /etc/rancher/k3s/config.yaml
+    mode: "0644"
+  notify: restart k3s
+
+- import_tasks: server.yml
+  when: k3s_role == 'server'
+
+- import_tasks: agent.yml
+  when: k3s_role == 'agent'

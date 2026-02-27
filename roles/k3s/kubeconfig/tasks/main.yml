@@ -1,0 +1,24 @@
+---
+- name: Ensure local artifacts dir exists
+  delegate_to: localhost
+  become: false
+  run_once: true
+  file:
+    path: "{{ (k3s_kubeconfig_local_path | dirname) }}"
+    state: directory
+    mode: "0755"
+
+- name: Fetch kubeconfig from server
+  fetch:
+    src: /etc/rancher/k3s/k3s.yaml
+    dest: "{{ k3s_kubeconfig_local_path }}"
+    flat: true
+
+- name: Rewrite kubeconfig server to VIP (local file)
+  delegate_to: localhost
+  become: false
+  run_once: true
+  replace:
+    path: "{{ k3s_kubeconfig_local_path }}"
+    regexp: '^(\s*server:\s*)https://127\.0\.0\.1:6443\s*$'
+    replace: '\1{{ k3s_api_server_url }}'

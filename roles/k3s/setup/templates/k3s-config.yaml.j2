@@ -1,0 +1,36 @@
+{% if k3s_role == 'server' %}
+# --- k3s server ---
+token: "{{ k3s_token }}"
+write-kubeconfig-mode: "0644"
+
+{% if k3s_cluster_init | default(false) %}
+cluster-init: true
+{% else %}
+server: "{{ k3s_api_server_url }}"
+{% endif %}
+
+cluster-cidr: "{{ k3s_cluster_cidr }}"
+service-cidr: "{{ k3s_service_cidr }}"
+cluster-dns: "{{ k3s_cluster_dns }}"
+
+{% for san in (k3s_tls_sans | default([])) %}
+tls-san:
+{% endfor %}
+{% for san in (k3s_tls_sans | default([])) %}
+  - "{{ san }}"
+{% endfor %}
+
+{% if k3s_disable_components is defined and k3s_disable_components|length > 0 %}
+disable:
+{% for item in k3s_disable_components %}
+  - "{{ item }}"
+{% endfor %}
+{% endif %}
+
+node-taint:
+  - "node-role.kubernetes.io/control-plane=true:NoSchedule"
+{% else %}
+# --- k3s agent ---
+token: "{{ k3s_token }}"
+server: "{{ k3s_api_server_url }}"
+{% endif %}

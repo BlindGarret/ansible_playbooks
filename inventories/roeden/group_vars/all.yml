@@ -1,0 +1,29 @@
+# Cluster identity
+k3s_cluster_name: roeden
+
+# Stable API endpoint
+k3s_api_vip: 192.168.10.20
+kubevip_interface: eth0 
+kubevip_image: "ghcr.io/kube-vip/kube-vip:v1.0.4"
+k3s_api_server_url: "https://{{ k3s_api_vip }}:6443"
+
+# k3s version (pin it; upgrade intentionally)
+k3s_version: "v1.35.0+k3s3"   # example; set to what you want
+
+# Token handling (put real value in vault)
+k3s_token: "fDQXK-65lK9XBikG3e-avYcQroEGT1KV5OUaMtQow2NwsZNX5Vwiwb7MM3fm4Wdk"
+
+# Keep kubeconfig locally after install
+k3s_kubeconfig_local_path: "../../artifacts/kubeconfig-{{ k3s_cluster_name }}.yaml"
+
+# Networking (defaults are fine; override if you want)
+k3s_cluster_cidr: "10.42.0.0/16"
+k3s_service_cidr: "10.43.0.0/16"
+k3s_cluster_dns: "10.43.0.10"
+
+# MetalLB pool (L2)
+metallb_version: "v0.15.3"
+metallb_address_pool: "192.168.10.50-192.168.10.70"
+
+# Optional: decide if control planes can schedule normal pods
+k3s_taint_control_plane: true

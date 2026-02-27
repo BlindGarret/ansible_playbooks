@@ -1,0 +1,31 @@
+---
+- name: Ensure k3s server manifests directory exists
+  file:
+    path: /var/lib/rancher/k3s/server/manifests
+    state: directory
+    mode: "0755"
+
+- name: Install kube-vip manifest (API VIP)
+  template:
+    src: kube-vip.yaml.j2
+    dest: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
+    mode: "0644"
+
+# Best-effort readiness check (won't fail the whole play if kubectl isn't ready yet)
+- name: Wait for kube-vip DaemonSet to be created
+  shell: |
+    set -e
+    kubectl -n kube-system get ds kube-vip >/dev/null 2>&1
+  args:
+    executable: /bin/bash
+  register: _kubevip_ds
+  retries: 30
+  delay: 2
+  until: _kubevip_ds.rc == 0
+  changed_when: false
+
+- name: Wait for API port via VIP
+  wait_for:
+    host: "{{ k3s_api_vip }}"
+    port: 6443
+    timeout: 120

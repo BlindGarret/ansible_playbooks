@@ -1,0 +1,5 @@
+- name: restart k3s
+  systemd:
+    name: "{{ (k3s_role == 'server') | ternary('k3s', 'k3s-agent') }}"
+    state: restarted
+  listen: restart k3s
