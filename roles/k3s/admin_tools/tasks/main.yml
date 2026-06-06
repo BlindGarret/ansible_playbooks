@@ -1,0 +1,22 @@
+---
+# Tools required for kubernetes.core.helm and kubernetes.core.k8s tasks to run
+# directly against the cluster from a control plane.
+
+- name: Install helm CLI
+  unarchive:
+    src: "https://get.helm.sh/helm-v{{ helm_cli_version }}-linux-amd64.tar.gz"
+    dest: /usr/local/bin
+    extra_opts: "--strip-components=1"
+    owner: root
+    group: root
+    mode: "0755"
+    remote_src: true
+  args:
+    creates: /usr/local/bin/helm
+
+- name: Install python3-kubernetes (for kubernetes.core.k8s + helm modules)
+  apt:
+    name: python3-kubernetes
+    state: present
+    update_cache: true
+    cache_valid_time: 3600

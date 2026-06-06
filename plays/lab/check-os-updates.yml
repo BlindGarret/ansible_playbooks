@@ -1,0 +1,39 @@
+---
+# Refresh apt metadata on every host in the lab, count upgradable packages,
+# then print a per-host summary. Nothing is installed.
+
+- name: lab | count available updates
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: true
+        cache_valid_time: 0
+
+    - name: List upgradable packages
+      shell: |
+        set -o pipefail
+        apt list --upgradable 2>/dev/null | tail -n +2
+      args:
+        executable: /bin/bash
+      register: upgradable
+      changed_when: false
+
+    - name: Stash count + names
+      set_fact:
+        upgradable_count: "{{ upgradable.stdout_lines | length }}"
+        upgradable_names: "{{ upgradable.stdout_lines | map('regex_replace', '/.*$', '') | list }}"
+
+    - name: Build per-host summary line
+      set_fact:
+        upgradable_line: "{{ '%-10s' | format(inventory_hostname) }} {{ '%3d' | format(upgradable_count | int) }} updates{% if upgradable_names | length > 0 %}: {{ upgradable_names | join(', ') }}{% endif %}"
+
+- name: lab | report updates available
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Per-host upgrade summary
+      debug:
+        msg: "{{ ['Available updates per host:'] + (groups['all'] | map('extract', hostvars, 'upgradable_line') | list) }}"

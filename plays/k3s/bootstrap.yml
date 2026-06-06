@@ -5,6 +5,7 @@
   gather_facts: true
   roles:
     - ../../roles/k3s/common_prereqs
+    - ../../roles/lab/trust_internal_cert
 
 - name: roeden | bootstrap cp1
   hosts: k3s-cp1

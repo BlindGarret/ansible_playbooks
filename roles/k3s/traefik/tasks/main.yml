@@ -1,0 +1,24 @@
+---
+# Install two Traefik instances — one per ingress zone. Each is a separate
+# helm release with its own LoadBalancer IP, GatewayClass, and pods. Traffic
+# arriving at one IP physically cannot reach the other zone's Gateways.
+
+- name: Ensure traefik namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ traefik_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ traefik_namespace }}"
+
+- name: Install Traefik instances
+  include_tasks: install-instance.yml
+  loop:
+    - name: traefik-internal
+      ip: "{{ traefik_internal_ip }}"
+    - name: traefik-external
+      ip: "{{ traefik_external_ip }}"
+  loop_control:
+    loop_var: instance

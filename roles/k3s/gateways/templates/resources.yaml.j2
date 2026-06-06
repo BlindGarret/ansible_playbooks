@@ -1,0 +1,144 @@
+---
+# Internal TLS Secret — loaded from your self-signed cert + key on the controller.
+apiVersion: v1
+kind: Secret
+type: kubernetes.io/tls
+metadata:
+  name: {{ internal_tls_secret_name }}
+  namespace: {{ traefik_namespace }}
+data:
+  tls.crt: {{ lookup('file', playbook_dir ~ '/' ~ internal_cert_path) | b64encode }}
+  tls.key: {{ lookup('file', playbook_dir ~ '/' ~ internal_cert_key_path) | b64encode }}
+---
+# Cloudflare API token used by cert-manager's DNS-01 solver to write
+# _acme-challenge TXT records. Lives in cert-manager's namespace so the
+# ClusterIssuer can read it. File content is the bare token, no whitespace.
+apiVersion: v1
+kind: Secret
+type: Opaque
+metadata:
+  name: cloudflare-api-token
+  namespace: {{ cert_manager_namespace }}
+stringData:
+  api-token: "{{ lookup('file', playbook_dir ~ '/' ~ cloudflare_api_token_path) | trim }}"
+---
+# Let's Encrypt staging — DNS-01 via Cloudflare. Start here.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: {{ letsencrypt_staging_issuer }}
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: {{ letsencrypt_email }}
+    privateKeySecretRef:
+      name: {{ letsencrypt_staging_issuer }}-account-key
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token
+---
+# Let's Encrypt production — flip letsencrypt_use_staging to false once staging works.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: {{ letsencrypt_prod_issuer }}
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: {{ letsencrypt_email }}
+    privateKeySecretRef:
+      name: {{ letsencrypt_prod_issuer }}-account-key
+    solvers:
+      - dns01:
+          cloudflare:
+            apiTokenSecretRef:
+              name: cloudflare-api-token
+              key: api-token
+---
+# One wildcard Certificate covers every external_hostnames entry.
+# Apps never need to manage their own Certificates — they just create
+# HTTPRoutes that attach to the external Gateway with their hostname.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ external_tls_secret_name }}
+  namespace: {{ traefik_namespace }}
+spec:
+  secretName: {{ external_tls_secret_name }}
+  issuerRef:
+    name: {{ letsencrypt_use_staging | ternary(letsencrypt_staging_issuer, letsencrypt_prod_issuer) }}
+    kind: ClusterIssuer
+  dnsNames:
+{% for host in external_hostnames %}
+    - "{{ host }}"
+{% endfor %}
+---
+# Internal Gateway — attaches to the traefik-internal install (bound to
+# {{ traefik_internal_ip }}). Terminates *.roeden.lab with your self-signed cert.
+# The traefik-zone label is what the traefik-internal install's labelselector
+# matches on — without it the install would ignore this Gateway.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ internal_gateway_name }}
+  namespace: {{ traefik_namespace }}
+  labels:
+    traefik-zone: traefik-internal
+spec:
+  gatewayClassName: traefik-internal
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      hostname: "*.roeden.lab"
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: https
+      port: 443
+      protocol: HTTPS
+      hostname: "*.roeden.lab"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: {{ internal_tls_secret_name }}
+      allowedRoutes:
+        namespaces:
+          from: All
+---
+# External Gateway — attaches to the traefik-external install (bound to
+# {{ traefik_external_ip }}). One wildcard HTTPS listener handles every subdomain.
+# DNS-01 means we don't need an HTTP listener for ACME challenges anymore.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ external_gateway_name }}
+  namespace: {{ traefik_namespace }}
+  labels:
+    traefik-zone: traefik-external
+spec:
+  gatewayClassName: traefik-external
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      hostname: "{{ external_wildcard_listener }}"
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: https
+      port: 443
+      protocol: HTTPS
+      hostname: "{{ external_wildcard_listener }}"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: {{ external_tls_secret_name }}
+      allowedRoutes:
+        namespaces:
+          from: All

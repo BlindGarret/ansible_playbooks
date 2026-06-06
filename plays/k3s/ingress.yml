@@ -1,0 +1,22 @@
+---
+# Bring up the ingress tier end to end:
+#   1. Traefik (dual-LB on traefik_internal_ip / traefik_external_ip)
+#   2. cert-manager (CRDs + controller)
+#   3. Gateway resources, ClusterIssuers, internal TLS Secret, Cloudflare token,
+#      external Certificate
+#
+# Re-runs are idempotent — re-run after editing external_hostnames, rotating
+# the self-signed cert, or flipping letsencrypt_use_staging.
+#
+# For version upgrades of Traefik or cert-manager, use plays/k3s/upgrade.yml.
+
+- name: roeden | ingress tier
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  roles:
+    - role: ../../roles/k3s/admin_tools
+    - role: ../../roles/k3s/gateway_api_crds
+    - role: ../../roles/k3s/traefik
+    - role: ../../roles/k3s/cert_manager
+    - role: ../../roles/k3s/gateways

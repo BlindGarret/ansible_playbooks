@@ -1,0 +1,11 @@
+---
+# Push the roeden self-signed cert into every lab host's CA trust store.
+# Run this once after generating/rotating the cert. The k3s bootstrap also
+# calls this role so freshly built nodes get it automatically.
+
+- name: lab | install internal CA trust
+  hosts: all
+  become: true
+  gather_facts: false
+  roles:
+    - role: ../../roles/lab/trust_internal_cert

@@ -1,0 +1,11 @@
+---
+# Apply the full set of ingress-tier resources in one shot:
+# internal TLS Secret, both LE ClusterIssuers, external Certificate,
+# internal Gateway, external Gateway. kubernetes.core.k8s handles the
+# multi-doc YAML and is idempotent on each resource.
+
+- name: Apply gateways + certs + issuers
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ gateways_kubeconfig }}"
+    definition: "{{ lookup('template', 'resources.yaml.j2') | from_yaml_all | list }}"

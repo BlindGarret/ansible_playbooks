@@ -1,0 +1,32 @@
+---
+# Rolling OS updates across the lab.
+#   - k3s control planes (serial: 1) — drained via a different cp
+#   - k3s agents       (serial: 1) — drained via the first cp
+#   - everything else  (serial: 1) — straight apt + reboot
+
+- name: lab | rolling OS update — k3s control planes
+  hosts: k3s_servers
+  become: true
+  gather_facts: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: ../../roles/k3s/node_update
+
+- name: lab | rolling OS update — k3s agents
+  hosts: k3s_agents
+  become: true
+  gather_facts: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: ../../roles/k3s/node_update
+
+- name: lab | rolling OS update — non-k3s nodes
+  hosts: all:!k3s_servers:!k3s_agents
+  become: true
+  gather_facts: true
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: ../../roles/lab/os_update

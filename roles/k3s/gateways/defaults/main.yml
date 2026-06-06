@@ -1,0 +1,8 @@
+---
+gateways_kubeconfig: /etc/rancher/k3s/k3s.yaml
+internal_gateway_name: internal
+external_gateway_name: external
+internal_tls_secret_name: internal-tls
+external_tls_secret_name: external-tls
+letsencrypt_staging_issuer: letsencrypt-staging
+letsencrypt_prod_issuer: letsencrypt-prod

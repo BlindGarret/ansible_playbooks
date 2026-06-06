@@ -1,0 +1,35 @@
+---
+# Refresh apt cache, count upgradable packages, and skip the upgrade+reboot
+# entirely when nothing is pending.
+
+- name: Refresh apt cache
+  apt:
+    update_cache: true
+    cache_valid_time: 0
+
+- name: Count upgradable packages
+  shell: |
+    set -o pipefail
+    apt list --upgradable 2>/dev/null | tail -n +2 | wc -l
+  args:
+    executable: /bin/bash
+  register: os_upgrade_count
+  changed_when: false
+
+- name: Skip — no OS updates available
+  debug:
+    msg: "{{ inventory_hostname }}: no OS updates available, skipping upgrade + reboot"
+  when: os_upgrade_count.stdout | int == 0
+
+- name: Upgrade + reboot
+  when: os_upgrade_count.stdout | int > 0
+  block:
+    - name: Upgrade OS packages
+      apt:
+        upgrade: safe
+        autoremove: true
+
+    - name: Reboot VM
+      reboot:
+        reboot_timeout: 600
+        post_reboot_delay: 20

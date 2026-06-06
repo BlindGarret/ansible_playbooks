@@ -1,0 +1,70 @@
+---
+# Check first: skip the drain/reboot dance if nothing is pending.
+# Otherwise: cordon → drain → OS update + reboot → wait Ready → uncordon.
+
+- name: Refresh apt cache
+  apt:
+    update_cache: true
+    cache_valid_time: 0
+
+- name: Count upgradable packages
+  shell: |
+    set -o pipefail
+    apt list --upgradable 2>/dev/null | tail -n +2 | wc -l
+  args:
+    executable: /bin/bash
+  register: os_upgrade_count
+  changed_when: false
+
+- name: Skip — no OS updates available
+  debug:
+    msg: "{{ inventory_hostname }}: no OS updates available, skipping drain + reboot"
+  when: os_upgrade_count.stdout | int == 0
+
+- name: Drain, update, reboot, rejoin
+  when: os_upgrade_count.stdout | int > 0
+  block:
+    - name: Cordon {{ inventory_hostname }} (via {{ drain_delegate }})
+      delegate_to: "{{ drain_delegate }}"
+      command: >
+        kubectl --kubeconfig {{ k3s_kubeconfig_remote }}
+        cordon {{ inventory_hostname }}
+      changed_when: true
+
+    - name: Drain {{ inventory_hostname }} (via {{ drain_delegate }})
+      delegate_to: "{{ drain_delegate }}"
+      command: >
+        kubectl --kubeconfig {{ k3s_kubeconfig_remote }}
+        drain {{ inventory_hostname }}
+        --ignore-daemonsets
+        --delete-emptydir-data
+        --timeout=5m
+      changed_when: true
+
+    - name: OS update + reboot
+      include_role:
+        name: lab/os_update
+
+    - name: Wait for {{ k3s_unit }} unit to be active
+      shell: systemctl is-active {{ k3s_unit }} || true
+      register: k3s_active
+      changed_when: false
+      retries: 30
+      delay: 10
+      until: k3s_active.stdout.strip() == 'active'
+
+    - name: Wait for node Ready (via {{ drain_delegate }})
+      delegate_to: "{{ drain_delegate }}"
+      command: >
+        kubectl --kubeconfig {{ k3s_kubeconfig_remote }}
+        wait --for=condition=Ready
+        node/{{ inventory_hostname }}
+        --timeout=300s
+      changed_when: false
+
+    - name: Uncordon {{ inventory_hostname }} (via {{ drain_delegate }})
+      delegate_to: "{{ drain_delegate }}"
+      command: >
+        kubectl --kubeconfig {{ k3s_kubeconfig_remote }}
+        uncordon {{ inventory_hostname }}
+      changed_when: true

@@ -1,0 +1,6 @@
+---
+traefik_chart_repo: https://traefik.github.io/charts
+traefik_chart_name: traefik
+traefik_release_name: traefik
+# Runs on a control plane, so use the on-node kubeconfig directly.
+traefik_kubeconfig: /etc/rancher/k3s/k3s.yaml

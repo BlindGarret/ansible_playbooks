@@ -1,0 +1,143 @@
+---
+# Bump k3s_version, kubevip_image, gateway_api_version, traefik_chart_version,
+# and/or cert_manager_chart_version in group_vars, then run this play.
+# - kube-vip is applied first (so we know the VIP is healthy before touching k3s).
+# - k3s control planes and agents are rolled serially so the cluster stays up.
+# - cert-manager and Traefik are upgraded last via `helm upgrade`.
+# - Each component is skipped if it's already at the target version.
+
+- name: roeden | kube-vip upgrade
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read running kube-vip image
+      command: >
+        kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+        get ds -n kube-system kube-vip
+        -o jsonpath={.spec.template.spec.containers[0].image}
+      register: kubevip_running
+      changed_when: false
+      failed_when: false
+
+    - name: Skip kube-vip — already at target
+      debug:
+        msg: "kube-vip already at {{ kubevip_image }}"
+      when: kubevip_running.stdout == kubevip_image
+
+    - name: Apply target kube-vip
+      when: kubevip_running.stdout != kubevip_image
+      block:
+        - name: Re-render kube-vip manifest
+          include_role:
+            name: k3s/vip
+
+        - name: Wait for kube-vip DaemonSet rollout to complete
+          command: >
+            kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+            rollout status ds/kube-vip -n kube-system
+            --timeout=180s
+          changed_when: false
+
+- name: roeden | verify API VIP is reachable
+  hosts: k3s_servers
+  gather_facts: false
+  run_once: true
+  tasks:
+    - name: Wait for VIP:6443 to accept connections
+      wait_for:
+        host: "{{ k3s_api_vip }}"
+        port: 6443
+        timeout: 120
+
+- name: roeden | rolling k3s upgrade — control planes
+  hosts: k3s_servers
+  become: true
+  gather_facts: false
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: ../../roles/k3s/node_upgrade
+
+- name: roeden | rolling k3s upgrade — agents
+  hosts: k3s_agents
+  become: true
+  gather_facts: false
+  serial: 1
+  max_fail_percentage: 0
+  roles:
+    - role: ../../roles/k3s/node_upgrade
+
+- name: roeden | Gateway API CRDs
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  roles:
+    - role: ../../roles/k3s/gateway_api_crds
+
+- name: roeden | cert-manager upgrade
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read deployed cert-manager chart version
+      command: >
+        helm list -n {{ cert_manager_namespace }}
+        --filter ^cert-manager$
+        --kubeconfig /etc/rancher/k3s/k3s.yaml
+        -o json
+      register: cert_manager_helm_list
+      changed_when: false
+      failed_when: false
+
+    - name: Parse deployed cert-manager chart version
+      set_fact:
+        cert_manager_deployed_version: >-
+          {{ (cert_manager_helm_list.stdout | from_json | first).chart
+             | default('')
+             | regex_replace('^cert-manager-', '') }}
+      when: cert_manager_helm_list.rc == 0 and cert_manager_helm_list.stdout | length > 2
+
+    - name: Skip cert-manager — already at target
+      debug:
+        msg: "cert-manager already at {{ cert_manager_chart_version }}"
+      when: cert_manager_deployed_version | default('') == cert_manager_chart_version
+
+    - name: Upgrade cert-manager chart
+      include_role:
+        name: k3s/cert_manager
+      when: cert_manager_deployed_version | default('') != cert_manager_chart_version
+
+- name: roeden | Traefik upgrade
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read deployed Traefik chart versions (both instances)
+      command: >
+        helm list -n {{ traefik_namespace }}
+        --filter "^traefik-"
+        --kubeconfig /etc/rancher/k3s/k3s.yaml
+        -o json
+      register: traefik_helm_list
+      changed_when: false
+      failed_when: false
+
+    - name: Parse deployed chart versions
+      set_fact:
+        traefik_deployed_versions: >-
+          {{ traefik_helm_list.stdout | from_json
+             | map(attribute='chart')
+             | map('regex_replace', '^traefik-', '')
+             | unique | list }}
+      when: traefik_helm_list.rc == 0 and traefik_helm_list.stdout | length > 2
+
+    - name: Skip Traefik — both instances already at target
+      debug:
+        msg: "Traefik instances all at {{ traefik_chart_version }}"
+      when: traefik_deployed_versions | default([]) == [traefik_chart_version]
+
+    - name: Upgrade Traefik chart (both instances)
+      include_role:
+        name: k3s/traefik
+      when: traefik_deployed_versions | default([]) != [traefik_chart_version]

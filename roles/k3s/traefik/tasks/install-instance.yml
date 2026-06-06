@@ -1,0 +1,21 @@
+---
+# Install/upgrade a single Traefik release. Caller passes `instance` with
+# `name` and `ip` fields.
+
+- name: Render values for {{ instance.name }}
+  template:
+    src: values.yaml.j2
+    dest: "/tmp/{{ instance.name }}-values.yaml"
+    mode: "0644"
+
+- name: Install/upgrade {{ instance.name }} chart
+  kubernetes.core.helm:
+    name: "{{ instance.name }}"
+    chart_ref: "{{ traefik_chart_name }}"
+    chart_repo_url: "{{ traefik_chart_repo }}"
+    chart_version: "{{ traefik_chart_version }}"
+    namespace: "{{ traefik_namespace }}"
+    values_files:
+      - "/tmp/{{ instance.name }}-values.yaml"
+    kubeconfig: "{{ traefik_kubeconfig }}"
+    wait: true

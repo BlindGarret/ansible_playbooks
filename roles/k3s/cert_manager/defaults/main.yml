@@ -1,0 +1,5 @@
+---
+cert_manager_chart_repo: https://charts.jetstack.io
+cert_manager_chart_name: cert-manager
+cert_manager_release_name: cert-manager
+cert_manager_kubeconfig: /etc/rancher/k3s/k3s.yaml

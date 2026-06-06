@@ -1,0 +1,6 @@
+# cert-manager chart values — managed by ansible, do not hand-edit on the cluster.
+# - crds.enabled: install CRDs via helm (avoids a separate kubectl apply step)
+# - Gateway API solver support: GA in cert-manager 1.15+, no feature gate needed.
+crds:
+  enabled: true
+  keep: true

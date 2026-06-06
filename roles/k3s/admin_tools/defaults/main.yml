@@ -1,0 +1,3 @@
+---
+# helm CLI version installed on the cluster admin host (k3s-cp1 by default).
+helm_cli_version: "3.16.3"

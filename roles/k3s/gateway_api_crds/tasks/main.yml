@@ -1,0 +1,17 @@
+---
+# Install the Gateway API experimental-channel CRDs (superset of standard:
+# adds TLSRoute, TCPRoute, UDPRoute, BackendTLSPolicy, etc). Traefik's
+# kubernetesGateway provider lists all of these on startup and crashes its
+# reconciler if any are missing — so the standard channel isn't enough.
+# Idempotent: `kubectl apply` updates only when the manifest has changed.
+
+- name: Install Gateway API {{ gateway_api_version }} experimental CRDs
+  # Server-side apply: the HTTPRoute CRD exceeds the 256KB annotation limit that
+  # client-side apply uses to track last-applied state. --force-conflicts lets
+  # us take ownership of fields previously managed by client-side applies.
+  shell: >
+    kubectl --kubeconfig {{ gateway_api_kubeconfig }}
+    apply --server-side=true --force-conflicts
+    -f https://github.com/kubernetes-sigs/gateway-api/releases/download/{{ gateway_api_version }}/experimental-install.yaml
+  register: gw_crds_apply
+  changed_when: "'configured' in gw_crds_apply.stdout or 'created' in gw_crds_apply.stdout or 'serverside-applied' in gw_crds_apply.stdout"

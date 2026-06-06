@@ -4,14 +4,16 @@ k3s_cluster_name: roeden
 # Stable API endpoint
 k3s_api_vip: 192.168.10.20
 kubevip_interface: eth0 
-kubevip_image: "ghcr.io/kube-vip/kube-vip:v1.0.4"
+kubevip_image: "ghcr.io/kube-vip/kube-vip:v1.2.0"
 k3s_api_server_url: "https://{{ k3s_api_vip }}:6443"
 
 # k3s version (pin it; upgrade intentionally)
-k3s_version: "v1.35.0+k3s3"   # example; set to what you want
+k3s_version: "v1.36.1+k3s1"   # example; set to what you want
 
-# Token handling (put real value in vault)
-k3s_token: "fDQXK-65lK9XBikG3e-avYcQroEGT1KV5OUaMtQow2NwsZNX5Vwiwb7MM3fm4Wdk"
+# k3s cluster join token. Stored in a gitignored local file; lookup runs on
+# the controller, the value is shipped to each node during install.
+k3s_token_path: "../../artifacts/k3s-token"
+k3s_token: "{{ lookup('file', playbook_dir ~ '/' ~ k3s_token_path) | trim }}"
 
 # Keep kubeconfig locally after install
 k3s_kubeconfig_local_path: "../../artifacts/kubeconfig-{{ k3s_cluster_name }}.yaml"
@@ -27,3 +29,47 @@ metallb_address_pool: "192.168.10.50-192.168.10.70"
 
 # Optional: decide if control planes can schedule normal pods
 k3s_taint_control_plane: true
+
+# Traefik ingress (Gateway API + classic Ingress both enabled)
+# Pin to the chart version you want. Check https://github.com/traefik/traefik-helm-chart/releases
+traefik_chart_version: "v40.2.0"
+traefik_namespace: traefik
+
+# LoadBalancer IPs from the MetalLB pool. Set DNS to these before issuing certs.
+traefik_internal_ip: 192.168.10.51
+traefik_external_ip: 192.168.10.52
+
+# cert-manager. Check https://github.com/cert-manager/cert-manager/releases
+cert_manager_chart_version: "v1.19.5"
+cert_manager_namespace: cert-manager
+
+# Gateway API CRDs. Check https://github.com/kubernetes-sigs/gateway-api/releases
+gateway_api_version: v1.5.1
+
+# Internal TLS: provide local paths to a self-signed cert + key on the controller.
+# These get loaded into a k8s Secret referenced by the internal Gateway.
+internal_cert_path: "../../artifacts/internal-tls.crt"
+internal_cert_key_path: "../../artifacts/internal-tls.key"
+
+# Domains and contact for cert-manager / Let's Encrypt.
+# Set internal_hostnames to what your self-signed cert's SANs cover.
+# Set external_hostnames to the public hostnames you want LE to issue for.
+internal_hostnames:
+  - "roeden.lab"
+  - "*.roeden.lab"
+
+# DNS-01 supports wildcards. One cert covers everything; apps just attach
+# HTTPRoutes by hostname with no per-app cert config.
+external_hostnames:
+  - "roedev.com"
+  - "*.roedev.com"
+
+external_wildcard_listener: "*.roedev.com"
+letsencrypt_email: "lroe2930@gmail.com"
+
+# Start with staging while you iterate, flip to false for prod issuance.
+letsencrypt_use_staging: false
+
+# Local file containing your Cloudflare API token (Zone:DNS:Edit, scoped to
+# roedev.com only). artifacts/ is gitignored — keep it there.
+cloudflare_api_token_path: "../../artifacts/cloudflare-api-token"

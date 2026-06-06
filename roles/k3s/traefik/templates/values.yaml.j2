@@ -1,0 +1,63 @@
+# Traefik chart values for ONE instance — rendered per release with `instance`
+# bound to the loop var. Two installs share the cluster, so each gets:
+#   - a unique fullname (drives Deployment/Service names)
+#   - a unique GatewayClass name
+#   - a labelselector telling the Traefik binary to only watch Gateways with
+#     a matching `traefik-zone` label, so the two instances don't fight over
+#     each other's Gateways.
+providers:
+  kubernetesGateway:
+    enabled: true
+    # Stay on the standard channel — experimental wants v1.TLSRoute /
+    # v1.BackendTLSPolicy which the CRDs don't expose at that version,
+    # and the failing informer hangs status reconciliation.
+    experimentalChannel: false
+  kubernetesIngress:
+    enabled: true
+
+# Filter which Gateway resources this Traefik instance manages, by label.
+# The matching label lives on the Gateway resources we create in
+# roles/k3s/gateways. Without this, both Traefik instances would race to
+# manage every Gateway with their shared controllerName.
+additionalArguments:
+  - "--providers.kubernetesGateway.labelselector=traefik-zone={{ instance.name }}"
+
+fullnameOverride: "{{ instance.name }}"
+
+# We define our own Gateway resources in roles/k3s/gateways.
+gateway:
+  enabled: false
+
+# Give each install its own GatewayClass so they don't collide on creation,
+# and label it so this Traefik's labelselector actually matches it (the
+# selector applies to GatewayClasses too, not just Gateways).
+gatewayClass:
+  name: "{{ instance.name }}"
+  labels:
+    traefik-zone: "{{ instance.name }}"
+
+service:
+  type: LoadBalancer
+  annotations:
+    metallb.universe.tf/loadBalancerIPs: "{{ instance.ip }}"
+
+# Pin entrypoints to 80/443 so Gateway API listener ports match the actual
+# Traefik entrypoint ports (Gateway listener.port is matched against the
+# entrypoint's internal port, not the Service port). NET_BIND_SERVICE lets
+# the non-root Traefik user bind to those low ports.
+ports:
+  web:
+    port: 80
+    expose:
+      default: true
+  websecure:
+    port: 443
+    expose:
+      default: true
+
+securityContext:
+  capabilities:
+    add:
+      - NET_BIND_SERVICE
+    drop:
+      - ALL

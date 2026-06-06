@@ -1,0 +1,28 @@
+---
+- name: Ensure cert-manager namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ cert_manager_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ cert_manager_namespace }}"
+
+- name: Render cert-manager chart values
+  template:
+    src: values.yaml.j2
+    dest: /tmp/cert-manager-values.yaml
+    mode: "0644"
+
+- name: Install/upgrade cert-manager chart
+  kubernetes.core.helm:
+    name: "{{ cert_manager_release_name }}"
+    chart_ref: "{{ cert_manager_chart_name }}"
+    chart_repo_url: "{{ cert_manager_chart_repo }}"
+    chart_version: "{{ cert_manager_chart_version }}"
+    namespace: "{{ cert_manager_namespace }}"
+    values_files:
+      - /tmp/cert-manager-values.yaml
+    kubeconfig: "{{ cert_manager_kubeconfig }}"
+    wait: true

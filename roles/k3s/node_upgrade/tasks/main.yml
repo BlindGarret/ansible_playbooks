@@ -1,0 +1,71 @@
+---
+# Upgrade k3s on a single node to the target {{ k3s_version }}.
+# Skips if already at target. Otherwise: cordon → drain → re-run install script
+# (the standard k3s upgrade path) → wait Ready → uncordon. Designed for serial: 1.
+
+- name: Read running k3s version
+  command: /usr/local/bin/k3s --version
+  register: k3s_version_raw
+  changed_when: false
+
+- name: Parse running k3s version
+  set_fact:
+    k3s_running_version: >-
+      {{ (k3s_version_raw.stdout_lines[0]
+          | regex_search('v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+'))
+         | default('unknown', true) }}
+
+- name: Skip — already at target
+  debug:
+    msg: "{{ inventory_hostname }}: already at {{ k3s_version }}"
+  when: k3s_running_version == k3s_version
+
+- name: Drain, upgrade, rejoin
+  when: k3s_running_version != k3s_version
+  block:
+    - name: Cordon {{ inventory_hostname }} (via {{ drain_delegate }})
+      delegate_to: "{{ drain_delegate }}"
+      command: >
+        kubectl --kubeconfig {{ k3s_kubeconfig_remote }}
+        cordon {{ inventory_hostname }}
+      changed_when: true
+
+    - name: Drain {{ inventory_hostname }} (via {{ drain_delegate }})
+      delegate_to: "{{ drain_delegate }}"
+      command: >
+        kubectl --kubeconfig {{ k3s_kubeconfig_remote }}
+        drain {{ inventory_hostname }}
+        --ignore-daemonsets
+        --delete-emptydir-data
+        --timeout=5m
+      changed_when: true
+
+    - name: Re-run k3s install script with target version
+      shell: |
+        curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ k3s_version }}" sh -s - {{ k3s_role }}
+      args:
+        executable: /bin/bash
+
+    - name: Wait for {{ k3s_unit }} unit to be active
+      shell: systemctl is-active {{ k3s_unit }} || true
+      register: k3s_active
+      changed_when: false
+      retries: 30
+      delay: 10
+      until: k3s_active.stdout.strip() == 'active'
+
+    - name: Wait for node Ready (via {{ drain_delegate }})
+      delegate_to: "{{ drain_delegate }}"
+      command: >
+        kubectl --kubeconfig {{ k3s_kubeconfig_remote }}
+        wait --for=condition=Ready
+        node/{{ inventory_hostname }}
+        --timeout=300s
+      changed_when: false
+
+    - name: Uncordon {{ inventory_hostname }} (via {{ drain_delegate }})
+      delegate_to: "{{ drain_delegate }}"
+      command: >
+        kubectl --kubeconfig {{ k3s_kubeconfig_remote }}
+        uncordon {{ inventory_hostname }}
+      changed_when: true
