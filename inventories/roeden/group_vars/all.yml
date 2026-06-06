@@ -46,10 +46,31 @@ cert_manager_namespace: cert-manager
 # Gateway API CRDs. Check https://github.com/kubernetes-sigs/gateway-api/releases
 gateway_api_version: v1.5.1
 
-# Internal TLS: provide local paths to a self-signed cert + key on the controller.
-# These get loaded into a k8s Secret referenced by the internal Gateway.
+# NFS subdir external provisioner — dynamic PVs backed by a NAS export.
+# Check https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner/releases
+nfs_provisioner_chart_version: "4.0.18"
+nfs_provisioner_namespace: nfs-provisioner
+nfs_server: "192.168.0.29"
+nfs_path: "/volume1/appdata"
+nfs_storage_class_name: nfs-client
+nfs_default_storage_class: true
+
+# ArgoCD. Check https://github.com/argoproj/argo-helm/releases (filter for argo-cd-*)
+argocd_chart_version: "7.7.0"
+argocd_namespace: argocd
+argocd_hostname: argocd.roeden.lab
+
+# Internal TLS chain. The CA is the trust anchor (distributed to nodes' and
+# clients' CA stores). The leaf cert is what Traefik actually serves; it's
+# signed by the CA. Both live in artifacts/ which is gitignored.
+internal_ca_path: "../../artifacts/roeden-ca.crt"
+internal_ca_key_path: "../../artifacts/roeden-ca.key"
 internal_cert_path: "../../artifacts/internal-tls.crt"
 internal_cert_key_path: "../../artifacts/internal-tls.key"
+# Leaf cert lifetime + when to renew. Default: 365-day leaves, renew when 30
+# or fewer days remain. ingress.yml runs the renewal check automatically.
+internal_leaf_lifetime_days: 365
+internal_leaf_rotation_threshold_days: 30
 
 # Domains and contact for cert-manager / Let's Encrypt.
 # Set internal_hostnames to what your self-signed cert's SANs cover.

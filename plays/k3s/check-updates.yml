@@ -72,6 +72,28 @@
         gateway_api_latest_version: "{{ gateway_api_latest_release.json.tag_name }}"
         gateway_api_current_version: "{{ hostvars[groups['k3s_servers'][0]].gateway_api_version }}"
 
+    - name: Query NFS provisioner helm repo index
+      uri:
+        url: https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner/index.yaml
+        return_content: true
+      register: nfs_provisioner_index
+
+    - name: Stash latest + configured NFS provisioner versions
+      set_fact:
+        nfs_provisioner_latest_version: "{{ (nfs_provisioner_index.content | from_yaml).entries['nfs-subdir-external-provisioner'][0].version }}"
+        nfs_provisioner_current_version: "{{ hostvars[groups['k3s_servers'][0]].nfs_provisioner_chart_version | regex_replace('^v', '') }}"
+
+    - name: Query ArgoCD helm repo index
+      uri:
+        url: https://argoproj.github.io/argo-helm/index.yaml
+        return_content: true
+      register: argocd_index
+
+    - name: Stash latest + configured ArgoCD versions
+      set_fact:
+        argocd_latest_version: "{{ (argocd_index.content | from_yaml).entries['argo-cd'][0].version }}"
+        argocd_current_version: "{{ hostvars[groups['k3s_servers'][0]].argocd_chart_version | regex_replace('^v', '') }}"
+
 - name: roeden | gather current k3s versions
   hosts: k3s_servers:k3s_agents
   become: true
@@ -113,6 +135,14 @@
       set_fact:
         gateway_api_line: "{{ '%-12s' | format('gateway-api') }} {{ '%-16s' | format(gateway_api_current_version) }} {% if gateway_api_current_version == gateway_api_latest_version %}(up to date){% else %}(behind, latest {{ gateway_api_latest_version }}){% endif %}"
 
+    - name: Build NFS provisioner report line
+      set_fact:
+        nfs_provisioner_line: "{{ '%-12s' | format('nfs-prov') }} {{ '%-16s' | format(nfs_provisioner_current_version) }} {% if nfs_provisioner_current_version == nfs_provisioner_latest_version %}(up to date){% else %}(behind, latest {{ nfs_provisioner_latest_version }}){% endif %}"
+
+    - name: Build ArgoCD report line
+      set_fact:
+        argocd_line: "{{ '%-12s' | format('argocd') }} {{ '%-16s' | format(argocd_current_version) }} {% if argocd_current_version == argocd_latest_version %}(up to date){% else %}(behind, latest {{ argocd_latest_version }}){% endif %}"
+
     - name: Print version drift report
       debug:
-        msg: "{{ ['Latest k3s release: ' ~ k3s_latest_version, 'Latest kube-vip release: ' ~ kubevip_latest_version, 'Latest Traefik chart release: ' ~ traefik_latest_version, 'Latest cert-manager release: ' ~ cert_manager_latest_version, 'Latest Gateway API release: ' ~ gateway_api_latest_version, '', 'k3s running versions:'] + ((groups['k3s_servers'] + groups['k3s_agents']) | map('extract', hostvars, 'k3s_version_line') | list) + ['', 'Cluster components (configured):', kubevip_line, traefik_line, cert_manager_line, gateway_api_line] }}"
+        msg: "{{ ['Latest k3s release: ' ~ k3s_latest_version, 'Latest kube-vip release: ' ~ kubevip_latest_version, 'Latest Traefik chart release: ' ~ traefik_latest_version, 'Latest cert-manager release: ' ~ cert_manager_latest_version, 'Latest Gateway API release: ' ~ gateway_api_latest_version, 'Latest NFS provisioner chart: ' ~ nfs_provisioner_latest_version, 'Latest ArgoCD chart: ' ~ argocd_latest_version, '', 'k3s running versions:'] + ((groups['k3s_servers'] + groups['k3s_agents']) | map('extract', hostvars, 'k3s_version_line') | list) + ['', 'Cluster components (configured):', kubevip_line, traefik_line, cert_manager_line, gateway_api_line, nfs_provisioner_line, argocd_line] }}"

@@ -1,0 +1,12 @@
+# nfs-subdir-external-provisioner chart values — managed by ansible.
+nfs:
+  server: "{{ nfs_server }}"
+  path: "{{ nfs_path }}"
+
+storageClass:
+  name: "{{ nfs_storage_class_name }}"
+  defaultClass: {{ nfs_default_storage_class | bool | to_json }}
+  # Retain on PVC delete — homelab default, manual cleanup beats data loss.
+  reclaimPolicy: Retain
+  archiveOnDelete: true
+  allowVolumeExpansion: true

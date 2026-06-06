@@ -1,0 +1,45 @@
+---
+- name: Ensure argocd namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ argocd_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ argocd_namespace }}"
+
+# Ingress TLS Secrets are namespace-local; ArgoCD's Ingress in the argocd ns
+# needs its own copy of the self-signed cert content. Reads from the controller.
+- name: Create internal TLS Secret in argocd namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ argocd_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: kubernetes.io/tls
+      metadata:
+        name: "{{ argocd_tls_secret_name }}"
+        namespace: "{{ argocd_namespace }}"
+      data:
+        tls.crt: "{{ lookup('file', playbook_dir ~ '/' ~ internal_cert_path) | b64encode }}"
+        tls.key: "{{ lookup('file', playbook_dir ~ '/' ~ internal_cert_key_path) | b64encode }}"
+
+- name: Render ArgoCD chart values
+  template:
+    src: values.yaml.j2
+    dest: /tmp/argocd-values.yaml
+    mode: "0644"
+
+- name: Install/upgrade ArgoCD chart
+  kubernetes.core.helm:
+    name: "{{ argocd_release_name }}"
+    chart_ref: "{{ argocd_chart_name }}"
+    chart_repo_url: "{{ argocd_chart_repo }}"
+    chart_version: "{{ argocd_chart_version }}"
+    namespace: "{{ argocd_namespace }}"
+    values_files:
+      - /tmp/argocd-values.yaml
+    kubeconfig: "{{ argocd_kubeconfig }}"
+    wait: true

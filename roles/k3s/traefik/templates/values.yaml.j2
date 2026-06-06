@@ -15,12 +15,23 @@ providers:
   kubernetesIngress:
     enabled: true
 
-# Filter which Gateway resources this Traefik instance manages, by label.
-# The matching label lives on the Gateway resources we create in
-# roles/k3s/gateways. Without this, both Traefik instances would race to
-# manage every Gateway with their shared controllerName.
+# Filter which Gateway / Ingress resources this Traefik instance manages.
+# Without this, both Traefik instances would race to handle each other's
+# resources (same controllerName, same default IngressClass).
+# Also: permanent HTTP→HTTPS redirect at the web entrypoint.
 additionalArguments:
   - "--providers.kubernetesGateway.labelselector=traefik-zone={{ instance.name }}"
+  - "--providers.kubernetesIngress.ingressClass={{ instance.name }}"
+  - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+  - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+  - "--entrypoints.web.http.redirections.entrypoint.permanent=true"
+
+# Each install registers its own IngressClass; apps target one by setting
+# spec.ingressClassName. Neither is the cluster default — apps must be explicit.
+ingressClass:
+  enabled: true
+  isDefaultClass: false
+  name: "{{ instance.name }}"
 
 fullnameOverride: "{{ instance.name }}"
 

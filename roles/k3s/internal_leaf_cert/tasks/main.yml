@@ -1,0 +1,103 @@
+---
+# Renew the internal leaf cert if it's expiring soon. The CA stays put —
+# only the leaf cycles, so no trust redistribution is ever needed. After
+# (re)generation, refresh the k8s Secrets that Traefik + ArgoCD use.
+#
+# Cert ops run on the controller (where artifacts/ lives). Secret apply
+# runs on the cp where the role is invoked.
+
+- name: Check leaf cert days remaining
+  shell: |
+    set -e
+    LEAF="{{ playbook_dir }}/{{ internal_cert_path }}"
+    if [ ! -f "$LEAF" ]; then
+      echo "-1"
+      exit 0
+    fi
+    END=$(openssl x509 -in "$LEAF" -noout -enddate | cut -d= -f2)
+    EXPIRY=$(date -d "$END" +%s)
+    NOW=$(date +%s)
+    echo $(( (EXPIRY - NOW) / 86400 ))
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  become: false
+  register: leaf_days_left
+  changed_when: false
+
+- name: Report leaf cert state
+  debug:
+    msg: >-
+      Internal leaf cert: {{ leaf_days_left.stdout }} days remaining
+      (renew threshold: {{ internal_leaf_rotation_threshold_days }} days).
+      {% if (leaf_days_left.stdout | int) < (internal_leaf_rotation_threshold_days | int) %}Rotating now.{% else %}No rotation needed.{% endif %}
+
+- name: Rotate leaf cert
+  when: (leaf_days_left.stdout | int) < (internal_leaf_rotation_threshold_days | int)
+  delegate_to: localhost
+  become: false
+  block:
+    - name: Generate new server key + CSR
+      shell: |
+        openssl req -nodes -newkey rsa:2048 \
+          -keyout "{{ playbook_dir }}/{{ internal_cert_key_path }}" \
+          -out /tmp/internal-tls.csr \
+          -subj "/CN={{ internal_leaf_cn }}"
+      args:
+        executable: /bin/bash
+
+    - name: Sign CSR with internal CA
+      shell: |
+        openssl x509 -req -in /tmp/internal-tls.csr \
+          -CA "{{ playbook_dir }}/{{ internal_ca_path }}" \
+          -CAkey "{{ playbook_dir }}/{{ internal_ca_key_path }}" \
+          -CAcreateserial \
+          -out "{{ playbook_dir }}/{{ internal_cert_path }}" \
+          -days {{ internal_leaf_lifetime_days }} \
+          -extfile <(printf '%s\n' \
+            "subjectAltName={{ internal_hostnames | map('regex_replace', '^', 'DNS:') | join(',') }}" \
+            "basicConstraints=critical,CA:FALSE" \
+            "keyUsage=critical,digitalSignature,keyEncipherment" \
+            "extendedKeyUsage=serverAuth")
+      args:
+        executable: /bin/bash
+
+    - name: Remove CSR
+      file:
+        path: /tmp/internal-tls.csr
+        state: absent
+
+# Refresh the Secrets for any namespace that already exists. On a first
+# install via ingress.yml, the argocd namespace doesn't exist yet — that's
+# fine, services.yml will create the Secret from the same local file. From
+# upgrade.yml's run onward, both namespaces exist and both get refreshed.
+- name: Look up target namespaces
+  kubernetes.core.k8s_info:
+    kind: Namespace
+    name: "{{ item }}"
+    kubeconfig: "{{ internal_leaf_kubeconfig }}"
+  register: leaf_ns_check
+  loop:
+    - "{{ traefik_namespace }}"
+    - "{{ argocd_namespace }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Refresh internal-tls Secret in existing namespaces
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ internal_leaf_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: kubernetes.io/tls
+      metadata:
+        name: internal-tls
+        namespace: "{{ item.item }}"
+      data:
+        tls.crt: "{{ lookup('file', playbook_dir ~ '/' ~ internal_cert_path) | b64encode }}"
+        tls.key: "{{ lookup('file', playbook_dir ~ '/' ~ internal_cert_key_path) | b64encode }}"
+  loop: "{{ leaf_ns_check.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.resources | length > 0

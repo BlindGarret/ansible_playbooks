@@ -1,6 +1,13 @@
 ---
-# Bump k3s_version, kubevip_image, gateway_api_version, traefik_chart_version,
-# and/or cert_manager_chart_version in group_vars, then run this play.
+# Bump any of: k3s_version, kubevip_image, gateway_api_version,
+# traefik_chart_version, cert_manager_chart_version,
+# nfs_provisioner_chart_version, argocd_chart_version in group_vars,
+# then run this play.
+#
+# Safe to also run this with no version changes — it doubles as the weekly
+# maintenance pass: the final phase renews the internal leaf cert when it's
+# within internal_leaf_rotation_threshold_days of expiry, and re-syncs the
+# k8s Secrets that Traefik + ArgoCD read.
 # - kube-vip is applied first (so we know the VIP is healthy before touching k3s).
 # - k3s control planes and agents are rolled serially so the cluster stays up.
 # - cert-manager and Traefik are upgraded last via `helm upgrade`.
@@ -141,3 +148,76 @@
       include_role:
         name: k3s/traefik
       when: traefik_deployed_versions | default([]) != [traefik_chart_version]
+
+- name: roeden | NFS provisioner upgrade
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read deployed NFS provisioner chart version
+      command: >
+        helm list -n {{ nfs_provisioner_namespace }}
+        --filter ^nfs-subdir-external-provisioner$
+        --kubeconfig /etc/rancher/k3s/k3s.yaml
+        -o json
+      register: nfs_provisioner_helm_list
+      changed_when: false
+      failed_when: false
+
+    - name: Parse deployed NFS provisioner chart version
+      set_fact:
+        nfs_provisioner_deployed_version: >-
+          {{ (nfs_provisioner_helm_list.stdout | from_json | first).chart
+             | default('')
+             | regex_replace('^nfs-subdir-external-provisioner-', '') }}
+      when: nfs_provisioner_helm_list.rc == 0 and nfs_provisioner_helm_list.stdout | length > 2
+
+    - name: Skip NFS provisioner — already at target
+      debug:
+        msg: "NFS provisioner already at {{ nfs_provisioner_chart_version }}"
+      when: nfs_provisioner_deployed_version | default('') == nfs_provisioner_chart_version
+
+    - name: Upgrade NFS provisioner chart
+      include_role:
+        name: k3s/nfs_provisioner
+      when: nfs_provisioner_deployed_version | default('') != nfs_provisioner_chart_version
+
+- name: roeden | ArgoCD upgrade
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read deployed ArgoCD chart version
+      command: >
+        helm list -n {{ argocd_namespace }}
+        --filter ^argocd$
+        --kubeconfig /etc/rancher/k3s/k3s.yaml
+        -o json
+      register: argocd_helm_list
+      changed_when: false
+      failed_when: false
+
+    - name: Parse deployed ArgoCD chart version
+      set_fact:
+        argocd_deployed_version: >-
+          {{ (argocd_helm_list.stdout | from_json | first).chart
+             | default('')
+             | regex_replace('^argo-cd-', '') }}
+      when: argocd_helm_list.rc == 0 and argocd_helm_list.stdout | length > 2
+
+    - name: Skip ArgoCD — already at target
+      debug:
+        msg: "ArgoCD already at {{ argocd_chart_version }}"
+      when: argocd_deployed_version | default('') == argocd_chart_version
+
+    - name: Upgrade ArgoCD chart
+      include_role:
+        name: k3s/argocd
+      when: argocd_deployed_version | default('') != argocd_chart_version
+
+- name: roeden | internal leaf cert renewal
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  roles:
+    - role: ../../roles/k3s/internal_leaf_cert

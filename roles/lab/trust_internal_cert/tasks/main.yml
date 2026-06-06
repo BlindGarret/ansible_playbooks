@@ -1,13 +1,13 @@
 ---
-# Install the roeden self-signed cert into the host's CA trust store so that
-# anything on the box (curl, k8s clients, app code) trusts *.roeden.lab without
-# --insecure flags. Reads the cert from the controller side via lookup; the
-# resolved path is `{{ playbook_dir }}/{{ internal_cert_path }}`.
+# Install the Roeden internal CA cert into the host's CA trust store so that
+# anything on the box (curl, k8s clients, app code) trusts the cert chain for
+# *.roeden.lab without --insecure flags. Reads the CA cert from the controller
+# side; resolved path is `{{ playbook_dir }}/{{ internal_ca_path }}`.
 
-- name: Install internal CA cert into trust store
+- name: Install Roeden internal CA cert into trust store
   copy:
-    content: "{{ lookup('file', playbook_dir ~ '/' ~ internal_cert_path) }}"
-    dest: /usr/local/share/ca-certificates/roeden-internal.crt
+    content: "{{ lookup('file', playbook_dir ~ '/' ~ internal_ca_path) }}"
+    dest: /usr/local/share/ca-certificates/roeden-internal-ca.crt
     owner: root
     group: root
     mode: "0644"

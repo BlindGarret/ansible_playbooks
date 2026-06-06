@@ -16,6 +16,11 @@
   gather_facts: false
   roles:
     - role: ../../roles/k3s/admin_tools
+    # Generates the leaf cert on first install (no leaf file yet); on rerun
+    # it no-ops if the existing cert still has plenty of life. Secret refresh
+    # is conditional on the target namespace existing, so this is safe to
+    # run before traefik/cert-manager/gateways have created theirs.
+    - role: ../../roles/k3s/internal_leaf_cert
     - role: ../../roles/k3s/gateway_api_crds
     - role: ../../roles/k3s/traefik
     - role: ../../roles/k3s/cert_manager

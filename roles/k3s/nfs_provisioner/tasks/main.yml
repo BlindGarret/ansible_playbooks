@@ -1,0 +1,28 @@
+---
+- name: Ensure nfs-provisioner namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ nfs_provisioner_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ nfs_provisioner_namespace }}"
+
+- name: Render NFS provisioner values
+  template:
+    src: values.yaml.j2
+    dest: /tmp/nfs-provisioner-values.yaml
+    mode: "0644"
+
+- name: Install/upgrade nfs-subdir-external-provisioner chart
+  kubernetes.core.helm:
+    name: "{{ nfs_provisioner_release_name }}"
+    chart_ref: "{{ nfs_provisioner_chart_name }}"
+    chart_repo_url: "{{ nfs_provisioner_chart_repo }}"
+    chart_version: "{{ nfs_provisioner_chart_version }}"
+    namespace: "{{ nfs_provisioner_namespace }}"
+    values_files:
+      - /tmp/nfs-provisioner-values.yaml
+    kubeconfig: "{{ nfs_provisioner_kubeconfig }}"
+    wait: true

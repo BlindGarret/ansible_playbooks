@@ -1,0 +1,34 @@
+# ArgoCD chart values — managed by ansible.
+global:
+  domain: "{{ argocd_hostname }}"
+
+# Traefik terminates TLS; ArgoCD server should speak plain HTTP behind it,
+# otherwise the server serves its own TLS and double-terminates badly.
+configs:
+  params:
+    server.insecure: true
+  cm:
+    # Local accounts. apiKey lets the account generate API tokens; login lets
+    # it log in via web/CLI with a password. Password itself is set out-of-band
+    # via `argocd account update-password` — never lives in config.
+    accounts.lroe: "apiKey, login"
+    # Flip this to "false" once you've confirmed lroe can log in. Until then
+    # admin stays enabled so you have a path to set lroe's initial password.
+    admin.enabled: "false"
+  rbac:
+    # Grant lroe the built-in admin role. Anything else falls back to the
+    # default (which we lock to empty — no anonymous access).
+    policy.csv: |
+      g, lroe, role:admin
+    policy.default: ""
+
+server:
+  ingress:
+    enabled: true
+    ingressClassName: "{{ argocd_ingress_class }}"
+    hostname: "{{ argocd_hostname }}"
+    tls: true
+    extraTls:
+      - hosts:
+          - "{{ argocd_hostname }}"
+        secretName: "{{ argocd_tls_secret_name }}"

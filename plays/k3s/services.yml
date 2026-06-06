@@ -1,0 +1,20 @@
+---
+# Platform services that sit on top of the cluster + ingress tier.
+#   - NFS subdir external provisioner (StorageClass backed by the NAS)
+#   - ArgoCD (GitOps control plane, exposed via internal Gateway)
+#
+# Run order for a fresh cluster:
+#   1. plays/k3s/bootstrap.yml
+#   2. plays/k3s/ingress.yml
+#   3. plays/k3s/services.yml  (this)
+#
+# Idempotent — re-run after editing any of the services' vars.
+
+- name: roeden | platform services
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  roles:
+    - role: ../../roles/k3s/admin_tools
+    - role: ../../roles/k3s/nfs_provisioner
+    - role: ../../roles/k3s/argocd

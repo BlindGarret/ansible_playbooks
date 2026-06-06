@@ -1,0 +1,3 @@
+---
+internal_leaf_kubeconfig: /etc/rancher/k3s/k3s.yaml
+internal_leaf_cn: "*.roeden.lab"
