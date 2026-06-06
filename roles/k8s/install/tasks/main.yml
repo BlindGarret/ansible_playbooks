@@ -1,7 +1,0 @@
-#SPDX-License-Identifier: MIT-0
----
-# tasks file for install
-
-- import_tasks: 00_ensure_versions.yaml
-- import_tasks: 01_prerequisites.yaml
-- import_tasks: 02_install_services.yaml

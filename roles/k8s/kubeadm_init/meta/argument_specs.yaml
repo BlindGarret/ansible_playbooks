@@ -1,9 +1,0 @@
-argument_specs:
-  main:
-    short_description: Initializes K8s
-    description:
-      - Runs Kubeadm init on the host
-      - Sets up the kubeconfig for the host
-    author:
-      - BlindGarret
-

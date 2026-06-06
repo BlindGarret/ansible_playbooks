@@ -1,8 +1,0 @@
-argument_specs:
-  main:
-    short_description: Fetch Kubeconfig
-    description:
-      - Gathers the latest kubeconfig from the controller
-    author:
-      - BlindGarret
-
