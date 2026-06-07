@@ -1,0 +1,23 @@
+---
+# HAProxy in k3s, fronting the 3-VM Postgres cluster. Apps inside the cluster
+# connect to postgres-rw.postgres.svc:5432 — never to the PG VMs directly.
+
+- name: Apply postgres-proxy resources
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ postgres_proxy_kubeconfig }}"
+    definition: "{{ lookup('template', 'resources.yaml.j2') | from_yaml_all | list }}"
+
+- name: Wait for postgres-haproxy deployment to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ postgres_proxy_kubeconfig }}"
+    api_version: apps/v1
+    kind: Deployment
+    name: postgres-haproxy
+    namespace: "{{ postgres_proxy_namespace }}"
+  register: proxy_deploy
+  retries: 30
+  delay: 5
+  until: >
+    proxy_deploy.resources | length > 0
+    and (proxy_deploy.resources[0].status.readyReplicas | default(0)) == postgres_proxy_replicas

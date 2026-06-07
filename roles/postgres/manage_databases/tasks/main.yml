@@ -1,0 +1,56 @@
+---
+# Provision app-level databases + users on the Postgres cluster. Idempotent
+# via community.postgresql modules. All work happens on the current Patroni
+# leader (where writes are possible) — discovered at runtime, not pinned.
+
+- name: Discover current Patroni leader
+  shell: |
+    {{ patroni_install_dir }}/bin/patronictl -c /etc/patroni/patroni.yml list -f json \
+      | python3 -c 'import sys, json; print(next(r["Member"] for r in json.load(sys.stdin) if r["Role"] == "Leader"))'
+  register: pg_leader_query
+  changed_when: false
+  run_once: true
+
+- name: Stash leader hostname for downstream tasks
+  set_fact:
+    pg_leader: "{{ pg_leader_query.stdout }}"
+  run_once: true
+
+- name: Show leader being used
+  debug:
+    msg: "Provisioning databases via Patroni leader: {{ pg_leader }}"
+  run_once: true
+
+# community.postgresql modules need psycopg2 importable in the system Python.
+# Our prereqs install libpq-dev but not the binding; add it on the leader.
+- name: Ensure python3-psycopg2 on the leader
+  apt:
+    name: python3-psycopg2
+    state: present
+  delegate_to: "{{ pg_leader }}"
+  run_once: true
+
+- name: Ensure database users
+  community.postgresql.postgresql_user:
+    name: "{{ item.user }}"
+    password: "{{ lookup('file', playbook_dir ~ '/' ~ item.password_path) | trim }}"
+    state: present
+  loop: "{{ postgres_databases }}"
+  loop_control:
+    label: "{{ item.user }}"
+  delegate_to: "{{ pg_leader }}"
+  become_user: postgres
+  run_once: true
+
+- name: Ensure databases (owned by their app user)
+  community.postgresql.postgresql_db:
+    name: "{{ item.name }}"
+    owner: "{{ item.user }}"
+    encoding: UTF8
+    state: present
+  loop: "{{ postgres_databases }}"
+  loop_control:
+    label: "{{ item.name }}"
+  delegate_to: "{{ pg_leader }}"
+  become_user: postgres
+  run_once: true

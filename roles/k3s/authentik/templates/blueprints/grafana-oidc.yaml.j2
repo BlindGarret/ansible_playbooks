@@ -1,0 +1,83 @@
+# Grafana OIDC integration — declarative.
+#
+# Defines:
+#   - A group ({{ grafana_admins_group_name }}) — membership grants Admin in Grafana.
+#   - A scope mapping that adds a "groups" claim to ID tokens so Grafana can
+#     do role mapping from group membership.
+#   - The OAuth2 Provider that Grafana talks to (token + userinfo endpoints).
+#   - The Application linking to the Provider (controls visibility in the
+#     Authentik user library and policy gating).
+#
+# The client_secret is read at apply time from the GRAFANA_OIDC_CLIENT_SECRET
+# env var injected into the Authentik pod from the grafana-oidc-secret Secret.
+# The same value is mounted into Grafana's pod from a Secret with identical
+# content in the observability namespace.
+
+version: 1
+metadata:
+  name: grafana-oidc
+  labels:
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+  - model: authentik_core.group
+    identifiers:
+      name: "{{ grafana_admins_group_name }}"
+    attrs:
+      is_superuser: false
+
+  # Custom scope mapping — emits a "groups" claim listing the user's group
+  # names. Grafana reads this to do role mapping via role_attribute_path.
+  - model: authentik_providers_oauth2.scopemapping
+    id: grafana-scope-groups
+    identifiers:
+      name: "grafana-scope-groups"
+    attrs:
+      scope_name: "groups"
+      description: "Group names — used by Grafana for role mapping"
+      expression: |
+        return {"groups": [group.name for group in request.user.ak_groups.all()]}
+
+  - model: authentik_providers_oauth2.oauth2provider
+    id: grafana-provider
+    identifiers:
+      name: "grafana-provider"
+    attrs:
+      authorization_flow: !Find [authentik_flows.flow, [slug, "default-provider-authorization-implicit-consent"]]
+      authentication_flow: !Find [authentik_flows.flow, [slug, "default-authentication-flow"]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, "default-provider-invalidation-flow"]]
+      client_type: confidential
+      client_id: "grafana"
+      client_secret: !Env GRAFANA_OIDC_CLIENT_SECRET
+      access_token_validity: "hours=1"
+      refresh_token_validity: "days=30"
+      # Authentik 2026.x added grant_types as a per-provider allowlist with
+      # default=empty. Standard OIDC needs authorization_code (initial flow)
+      # plus refresh_token (so Grafana can renew without re-prompting).
+      grant_types:
+        - "authorization_code"
+        - "refresh_token"
+      redirect_uris:
+        - matching_mode: "strict"
+          url: "https://{{ grafana_hostname }}/login/generic_oauth"
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, "openid"]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, "profile"]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, "email"]]
+        - !KeyOf grafana-scope-groups
+
+  - model: authentik_core.application
+    identifiers:
+      slug: "grafana"
+    attrs:
+      name: "Grafana"
+      provider: !KeyOf grafana-provider
+      meta_launch_url: "https://{{ grafana_hostname }}/"
+      # 'all' = all bound policies must pass; with zero policies bound, this
+      # is vacuously allowed (the right default). 'any' would deny by default
+      # since "no policies" can't satisfy "at least one must pass". Anyone
+      # authenticated in Authentik can launch Grafana; Grafana then decides
+      # the role (Admin vs Viewer) from the groups[] claim.
+      policy_engine_mode: all
+      group: ""

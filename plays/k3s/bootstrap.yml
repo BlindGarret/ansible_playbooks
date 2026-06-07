@@ -1,4 +1,17 @@
 ---
+# Auto-generate the cluster join token on the controller if it's not already
+# in artifacts/. Once generated, it stays forever — rotating it requires
+# coordinating across every node.
+- name: roeden | bootstrap k3s secrets if missing
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: ../../roles/local/ensure_random_secrets
+      vars:
+        ensure_random_secrets:
+          - path: "{{ k3s_token_path }}"
+            description: "k3s cluster join token"
+
 - name: roeden | k3s HA bootstrap
   hosts: k3s_servers:k3s_agents
   become: true

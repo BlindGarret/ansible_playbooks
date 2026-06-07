@@ -1,0 +1,7 @@
+---
+uptime_kuma_chart_repo: https://dirsigler.github.io/uptime-kuma-helm
+uptime_kuma_chart_name: uptime-kuma
+uptime_kuma_release_name: uptime-kuma
+uptime_kuma_kubeconfig: /etc/rancher/k3s/k3s.yaml
+uptime_kuma_tls_secret_name: internal-tls
+uptime_kuma_ingress_class: traefik-internal

@@ -1,0 +1,66 @@
+# ArgoCD OIDC integration — declarative.
+# Mirror of grafana-oidc.yaml.j2; see that file for detailed comments on
+# each entry type. The client_secret comes from the ARGOCD_OIDC_CLIENT_SECRET
+# env var injected into the Authentik pod from the argocd-oidc-secret Secret.
+
+version: 1
+metadata:
+  name: argocd-oidc
+  labels:
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+  - model: authentik_core.group
+    identifiers:
+      name: "{{ argocd_admins_group_name }}"
+    attrs:
+      is_superuser: false
+
+  - model: authentik_providers_oauth2.scopemapping
+    id: argocd-scope-groups
+    identifiers:
+      name: "argocd-scope-groups"
+    attrs:
+      scope_name: "groups"
+      description: "Group names — used by ArgoCD for RBAC role mapping"
+      expression: |
+        return {"groups": [group.name for group in request.user.ak_groups.all()]}
+
+  - model: authentik_providers_oauth2.oauth2provider
+    id: argocd-provider
+    identifiers:
+      name: "argocd-provider"
+    attrs:
+      authorization_flow: !Find [authentik_flows.flow, [slug, "default-provider-authorization-implicit-consent"]]
+      authentication_flow: !Find [authentik_flows.flow, [slug, "default-authentication-flow"]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, "default-provider-invalidation-flow"]]
+      client_type: confidential
+      client_id: "argocd"
+      client_secret: !Env ARGOCD_OIDC_CLIENT_SECRET
+      access_token_validity: "hours=1"
+      refresh_token_validity: "days=30"
+      grant_types:
+        - "authorization_code"
+        - "refresh_token"
+      redirect_uris:
+        - matching_mode: "strict"
+          url: "https://{{ argocd_hostname }}/auth/callback"
+        # ArgoCD CLI uses a different callback. PKCE-based device flow.
+        - matching_mode: "strict"
+          url: "http://localhost:8085/auth/callback"
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, "openid"]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, "profile"]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, "email"]]
+        - !KeyOf argocd-scope-groups
+
+  - model: authentik_core.application
+    identifiers:
+      slug: "argocd"
+    attrs:
+      name: "ArgoCD"
+      provider: !KeyOf argocd-provider
+      meta_launch_url: "https://{{ argocd_hostname }}/"
+      policy_engine_mode: all
+      group: ""

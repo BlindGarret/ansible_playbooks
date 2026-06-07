@@ -8,19 +8,44 @@ configs:
   params:
     server.insecure: true
   cm:
-    # Local accounts. apiKey lets the account generate API tokens; login lets
-    # it log in via web/CLI with a password. Password itself is set out-of-band
-    # via `argocd account update-password` — never lives in config.
-    accounts.lroe: "apiKey, login"
-    # Flip this to "false" once you've confirmed lroe can log in. Until then
-    # admin stays enabled so you have a path to set lroe's initial password.
+    # SSO via Authentik (OIDC). The OAuth2 Provider + Application are created
+    # by the Authentik blueprint at:
+    #   roles/k3s/authentik/templates/blueprints/argocd-oidc.yaml.j2
+    # Login flow: browser → ArgoCD → "Login via Authentik" → auth.roeden.lab
+    # → bounced back with ID token → role mapped from group claim.
+    #
+    # clientSecret references the argocd-secret key populated below.
+    # rootCA is the internal CA cert inline — ArgoCD's server-to-server token
+    # exchange validates auth.roeden.lab's TLS cert against it.
+    oidc.config: |
+      name: Authentik
+      issuer: https://{{ authentik_hostname }}/application/o/argocd/
+      clientID: argocd
+      clientSecret: $oidc.authentik.clientSecret
+      requestedScopes: ["openid", "profile", "email", "groups"]
+      requestedIDTokenClaims:
+        groups:
+          essential: true
+      rootCA: |
+{{ lookup('file', playbook_dir ~ '/' ~ internal_ca_path) | indent(8, true) }}
+    # Bootstrap admin disabled — SSO is the only login path going forward.
+    # Break-glass: flip to "true" and re-run ansible if SSO is broken; the
+    # local admin password lives in the argocd-initial-admin-secret Secret.
     admin.enabled: "false"
   rbac:
-    # Grant lroe the built-in admin role. Anything else falls back to the
-    # default (which we lock to empty — no anonymous access).
+    # Members of the Authentik group named below get the built-in admin role.
+    # `scopes: "[groups]"` tells ArgoCD's RBAC matcher to look at the `groups`
+    # claim from the OIDC ID token instead of the user identity. Anyone else
+    # falls back to policy.default (empty = no access).
     policy.csv: |
-      g, lroe, role:admin
+      g, {{ argocd_admins_group_name }}, role:admin
     policy.default: ""
+    scopes: "[groups]"
+  secret:
+    # Extra keys merged into the chart-managed argocd-secret. ArgoCD looks up
+    # `$oidc.authentik.clientSecret` (referenced above) against this Secret.
+    extra:
+      oidc.authentik.clientSecret: "{{ lookup('file', playbook_dir ~ '/' ~ argocd_oidc_client_secret_path) | trim }}"
 
 server:
   ingress:

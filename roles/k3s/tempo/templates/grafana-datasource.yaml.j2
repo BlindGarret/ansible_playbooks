@@ -1,0 +1,27 @@
+# Grafana datasource for Tempo. Same sidecar-watched ConfigMap pattern as Loki.
+# Reminder: after first install, restart kps-grafana so it picks up the
+# new datasource (sidecar's reload API call fails after you change admin pw).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo-grafana-datasource
+  namespace: {{ observability_namespace }}
+  labels:
+    grafana_datasource: "1"
+data:
+  tempo-datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Tempo
+        type: tempo
+        access: proxy
+        url: http://{{ tempo_release_name }}.{{ observability_namespace }}.svc:3100
+        version: 1
+        editable: true
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: 'loki'
+            spanStartTimeShift: '-1h'
+            spanEndTimeShift: '1h'
+            tags: ['namespace', 'pod', 'container']
+            filterByTraceID: true

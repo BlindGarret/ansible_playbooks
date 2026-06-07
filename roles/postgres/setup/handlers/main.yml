@@ -1,0 +1,14 @@
+---
+- name: reload systemd
+  systemd:
+    daemon_reload: true
+
+- name: restart etcd
+  systemd:
+    name: etcd
+    state: restarted
+
+- name: restart patroni
+  systemd:
+    name: patroni
+    state: restarted

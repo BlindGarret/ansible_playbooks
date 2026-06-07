@@ -1,0 +1,5 @@
+---
+alloy_chart_repo: https://grafana.github.io/helm-charts
+alloy_chart_name: alloy
+alloy_release_name: alloy
+alloy_kubeconfig: /etc/rancher/k3s/k3s.yaml

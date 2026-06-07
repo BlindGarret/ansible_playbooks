@@ -1,0 +1,32 @@
+---
+# Check that user-provided secrets exist on the controller. Fails with a
+# clear "here's how to create it" message if any are missing — these files
+# come from outside (Cloudflare dashboard, Discord, your own openssl
+# invocation, etc.) so we can't auto-generate them.
+
+- name: Check each required user secret
+  stat:
+    path: "{{ playbook_dir }}/{{ item.path }}"
+  register: user_secret_stats
+  loop: "{{ require_user_secrets }}"
+  loop_control:
+    label: "{{ item.description }}"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Fail with instructions if any are missing
+  fail:
+    msg: |
+
+      Missing required secret: {{ item.item.description }}
+      Expected at: {{ playbook_dir }}/{{ item.item.path }}
+
+      How to create it:
+        {{ item.item.instructions }}
+  loop: "{{ user_secret_stats.results }}"
+  loop_control:
+    label: "{{ item.item.description }}"
+  when: not item.stat.exists
+  delegate_to: localhost
+  become: false

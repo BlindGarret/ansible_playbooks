@@ -1,0 +1,51 @@
+---
+# Apply k3s node config changes with a clean drain/restart bracket. The
+# expectation is that common_prereqs and the rendered /etc/rancher/k3s/config.yaml
+# already changed by the time this runs (those happen in the play above).
+# We just bracket the k3s service restart with a cordon/drain.
+
+- name: Cordon {{ inventory_hostname }} (via {{ drain_delegate }})
+  delegate_to: "{{ drain_delegate }}"
+  command: >
+    kubectl --kubeconfig {{ k3s_kubeconfig_remote }}
+    cordon {{ inventory_hostname }}
+  changed_when: true
+
+- name: Drain {{ inventory_hostname }} (via {{ drain_delegate }})
+  delegate_to: "{{ drain_delegate }}"
+  command: >
+    kubectl --kubeconfig {{ k3s_kubeconfig_remote }}
+    drain {{ inventory_hostname }}
+    --ignore-daemonsets
+    --delete-emptydir-data
+    --timeout=5m
+  changed_when: true
+
+- name: Restart {{ k3s_unit }} to pick up new config
+  systemd:
+    name: "{{ k3s_unit }}"
+    state: restarted
+
+- name: Wait for {{ k3s_unit }} to be active again
+  shell: systemctl is-active {{ k3s_unit }} || true
+  register: k3s_active
+  changed_when: false
+  retries: 30
+  delay: 10
+  until: k3s_active.stdout.strip() == 'active'
+
+- name: Wait for node Ready (via {{ drain_delegate }})
+  delegate_to: "{{ drain_delegate }}"
+  command: >
+    kubectl --kubeconfig {{ k3s_kubeconfig_remote }}
+    wait --for=condition=Ready
+    node/{{ inventory_hostname }}
+    --timeout=300s
+  changed_when: false
+
+- name: Uncordon {{ inventory_hostname }} (via {{ drain_delegate }})
+  delegate_to: "{{ drain_delegate }}"
+  command: >
+    kubectl --kubeconfig {{ k3s_kubeconfig_remote }}
+    uncordon {{ inventory_hostname }}
+  changed_when: true

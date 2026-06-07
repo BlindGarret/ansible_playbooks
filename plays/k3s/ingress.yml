@@ -10,6 +10,43 @@
 #
 # For version upgrades of Traefik or cert-manager, use plays/k3s/upgrade.yml.
 
+# Guard for user-provided files. Cloudflare token comes from the dashboard,
+# the CA cert/key from a one-time openssl invocation. Both have to exist
+# before we can do anything ingress-related.
+- name: roeden | require user-provided ingress secrets
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: ../../roles/local/require_user_secrets
+      vars:
+        require_user_secrets:
+          - path: "{{ cloudflare_api_token_path }}"
+            description: "Cloudflare API token (DNS-01 challenge)"
+            instructions: |
+              Generate a scoped token in the Cloudflare dashboard:
+                My Profile → API Tokens → Create Token → "Edit zone DNS"
+                Zone Resources → Include → Specific zone → your domain
+              Then drop the token into the file (no trailing newline):
+                echo -n 'TOKEN-FROM-DASHBOARD' > artifacts/cloudflare-api-token
+                chmod 600 artifacts/cloudflare-api-token
+          - path: "{{ internal_ca_path }}"
+            description: "Internal CA certificate (trust anchor for *.roeden.lab)"
+            instructions: |
+              One-time CA generation, see README "Initial setup step 3":
+                openssl req -x509 -nodes -newkey rsa:2048 \
+                  -keyout artifacts/roeden-ca.key \
+                  -out artifacts/roeden-ca.crt \
+                  -days 3650 \
+                  -subj "/CN=Roeden Lab Internal CA" \
+                  -addext "basicConstraints=critical,CA:TRUE" \
+                  -addext "keyUsage=critical,keyCertSign,cRLSign"
+          - path: "{{ internal_ca_key_path }}"
+            description: "Internal CA private key"
+            instructions: |
+              Same openssl command as the CA cert above — it generates both
+              files at once. If the .crt is there but the .key is missing,
+              regenerate both (the existing cert becomes invalid).
+
 - name: roeden | ingress tier
   hosts: k3s-cp1
   become: true

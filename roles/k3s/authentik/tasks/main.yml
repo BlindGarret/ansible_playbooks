@@ -1,0 +1,135 @@
+---
+- name: Ensure authentik namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ authentik_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ authentik_namespace }}"
+
+# Ingress TLS Secret — same pattern as ArgoCD / Grafana / Uptime Kuma.
+# internal_leaf_cert refreshes this Secret when the cert rotates.
+- name: Create internal-tls Secret in authentik namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ authentik_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: kubernetes.io/tls
+      metadata:
+        name: "{{ authentik_tls_secret_name }}"
+        namespace: "{{ authentik_namespace }}"
+      data:
+        tls.crt: "{{ lookup('file', playbook_dir ~ '/' ~ internal_cert_path) | b64encode }}"
+        tls.key: "{{ lookup('file', playbook_dir ~ '/' ~ internal_cert_key_path) | b64encode }}"
+
+# --- SSO blueprint plumbing ----------------------------------------------------
+# Channel 1: platform blueprints rendered from templates/blueprints/*.yaml.j2
+# directly into a ConfigMap mounted at /blueprints/platform/ in Authentik pods.
+# lookup('template', ...) renders on the controller and returns the string —
+# no remote temp file needed.
+- name: Create platform-blueprints ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ authentik_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: authentik-platform-blueprints
+        namespace: "{{ authentik_namespace }}"
+      data:
+        # One key per platform blueprint. Each is mounted as a subPath file
+        # in the Authentik pod (see roles/k3s/authentik/templates/values.yaml.j2).
+        # Add new app integrations as new keys + new subPath mounts.
+        grafana-oidc.yaml: "{{ lookup('template', 'blueprints/grafana-oidc.yaml.j2') }}"
+        argocd-oidc.yaml: "{{ lookup('template', 'blueprints/argocd-oidc.yaml.j2') }}"
+
+# OIDC client_secrets — same value mounted into Authentik (env var read by
+# the blueprint's !Env directive) and into the consuming app (env var read
+# by the app's config).
+- name: Create Grafana OIDC client_secret in authentik namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ authentik_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: Opaque
+      metadata:
+        name: grafana-oidc-secret
+        namespace: "{{ authentik_namespace }}"
+      stringData:
+        client-secret: "{{ lookup('file', playbook_dir ~ '/' ~ grafana_oidc_client_secret_path) | trim }}"
+
+- name: Create ArgoCD OIDC client_secret in authentik namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ authentik_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: Opaque
+      metadata:
+        name: argocd-oidc-secret
+        namespace: "{{ authentik_namespace }}"
+      stringData:
+        client-secret: "{{ lookup('file', playbook_dir ~ '/' ~ argocd_oidc_client_secret_path) | trim }}"
+
+# Channel 2: NFS-backed PVC mounted at /blueprints/apps/ — app-managed.
+# Custom apps drop their own *.yaml here; Authentik picks them up on dir watch.
+- name: Create apps-blueprints PVC (NFS-backed shared dir)
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ authentik_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: authentik-apps-blueprints
+        namespace: "{{ authentik_namespace }}"
+      spec:
+        accessModes: ["ReadWriteMany"]
+        storageClassName: "{{ nfs_storage_class_name }}"
+        resources:
+          requests:
+            storage: "{{ authentik_app_blueprints_storage_size }}"
+# -------------------------------------------------------------------------------
+
+- name: Render Authentik chart values
+  template:
+    src: values.yaml.j2
+    dest: /tmp/authentik-values.yaml
+    mode: "0600"   # contains the secret key and postgres password
+
+- name: Install/upgrade Authentik chart
+  kubernetes.core.helm:
+    name: "{{ authentik_release_name }}"
+    chart_ref: "{{ authentik_chart_name }}"
+    chart_repo_url: "{{ authentik_chart_repo }}"
+    chart_version: "{{ authentik_chart_version }}"
+    namespace: "{{ authentik_namespace }}"
+    values_files:
+      - /tmp/authentik-values.yaml
+    kubeconfig: "{{ authentik_kubeconfig }}"
+    wait: true
+    # Authentik's first run does DB migrations and bootstraps the admin user;
+    # initial deploy can take several minutes.
+    timeout: 10m
+
+# Explicitly trigger blueprint discovery after the helm upgrade settles. The
+# startup-time discovery the pod runs on its own has an observed race where
+# newly-mounted blueprints can be silently skipped on first scan; a manual
+# trigger here makes the playbook deterministic. Idempotent — discovery
+# does nothing when no new files are found or hashes haven't changed.
+- name: Trigger Authentik blueprint discovery
+  command: >
+    kubectl --kubeconfig {{ authentik_kubeconfig }}
+    -n {{ authentik_namespace }}
+    exec deploy/authentik-worker --
+    ak shell -c
+    "from authentik.blueprints.v1.tasks import blueprints_discovery; blueprints_discovery.send()"
+  changed_when: true

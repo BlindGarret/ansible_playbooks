@@ -1,8 +1,10 @@
 ---
 # Bump any of: k3s_version, kubevip_image, gateway_api_version,
 # traefik_chart_version, cert_manager_chart_version,
-# nfs_provisioner_chart_version, argocd_chart_version in group_vars,
-# then run this play.
+# nfs_provisioner_chart_version, argocd_chart_version, kps_chart_version,
+# loki_chart_version, tempo_chart_version, alloy_chart_version,
+# uptime_kuma_chart_version, authentik_chart_version, valkey_image,
+# postgres_proxy_image in group_vars, then run this play.
 #
 # Safe to also run this with no version changes — it doubles as the weekly
 # maintenance pass: the final phase renews the internal leaf cert when it's
@@ -214,6 +216,270 @@
       include_role:
         name: k3s/argocd
       when: argocd_deployed_version | default('') != argocd_chart_version
+
+- name: roeden | kube-prometheus-stack upgrade
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read deployed kube-prometheus-stack chart version
+      command: >
+        helm list -n {{ observability_namespace }}
+        --filter ^kps$
+        --kubeconfig /etc/rancher/k3s/k3s.yaml
+        -o json
+      register: kps_helm_list
+      changed_when: false
+      failed_when: false
+
+    - name: Parse deployed KPS chart version
+      set_fact:
+        kps_deployed_version: >-
+          {{ (kps_helm_list.stdout | from_json | first).chart
+             | default('')
+             | regex_replace('^kube-prometheus-stack-', '') }}
+      when: kps_helm_list.rc == 0 and kps_helm_list.stdout | length > 2
+
+    - name: Skip kube-prometheus-stack — already at target
+      debug:
+        msg: "kube-prometheus-stack already at {{ kps_chart_version }}"
+      when: kps_deployed_version | default('') == kps_chart_version
+
+    - name: Upgrade kube-prometheus-stack chart
+      include_role:
+        name: k3s/kube_prometheus_stack
+      when: kps_deployed_version | default('') != kps_chart_version
+
+- name: roeden | Loki upgrade
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read deployed Loki chart version
+      command: >
+        helm list -n {{ observability_namespace }}
+        --filter ^loki$
+        --kubeconfig /etc/rancher/k3s/k3s.yaml
+        -o json
+      register: loki_helm_list
+      changed_when: false
+      failed_when: false
+
+    - name: Parse deployed Loki chart version
+      set_fact:
+        loki_deployed_version: >-
+          {{ (loki_helm_list.stdout | from_json | first).chart
+             | default('')
+             | regex_replace('^loki-', '') }}
+      when: loki_helm_list.rc == 0 and loki_helm_list.stdout | length > 2
+
+    - name: Skip Loki — already at target
+      debug:
+        msg: "Loki already at {{ loki_chart_version }}"
+      when: loki_deployed_version | default('') == loki_chart_version
+
+    - name: Upgrade Loki chart
+      include_role:
+        name: k3s/loki
+      when: loki_deployed_version | default('') != loki_chart_version
+
+- name: roeden | Tempo upgrade
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read deployed Tempo chart version
+      command: >
+        helm list -n {{ observability_namespace }}
+        --filter ^tempo$
+        --kubeconfig /etc/rancher/k3s/k3s.yaml
+        -o json
+      register: tempo_helm_list
+      changed_when: false
+      failed_when: false
+
+    - name: Parse deployed Tempo chart version
+      set_fact:
+        tempo_deployed_version: >-
+          {{ (tempo_helm_list.stdout | from_json | first).chart
+             | default('')
+             | regex_replace('^tempo-', '') }}
+      when: tempo_helm_list.rc == 0 and tempo_helm_list.stdout | length > 2
+
+    - name: Skip Tempo — already at target
+      debug:
+        msg: "Tempo already at {{ tempo_chart_version }}"
+      when: tempo_deployed_version | default('') == tempo_chart_version
+
+    - name: Upgrade Tempo chart
+      include_role:
+        name: k3s/tempo
+      when: tempo_deployed_version | default('') != tempo_chart_version
+
+- name: roeden | Alloy upgrade
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read deployed Alloy chart version
+      command: >
+        helm list -n {{ observability_namespace }}
+        --filter ^alloy$
+        --kubeconfig /etc/rancher/k3s/k3s.yaml
+        -o json
+      register: alloy_helm_list
+      changed_when: false
+      failed_when: false
+
+    - name: Parse deployed Alloy chart version
+      set_fact:
+        alloy_deployed_version: >-
+          {{ (alloy_helm_list.stdout | from_json | first).chart
+             | default('')
+             | regex_replace('^alloy-', '') }}
+      when: alloy_helm_list.rc == 0 and alloy_helm_list.stdout | length > 2
+
+    - name: Skip Alloy — already at target
+      debug:
+        msg: "Alloy already at {{ alloy_chart_version }}"
+      when: alloy_deployed_version | default('') == alloy_chart_version
+
+    - name: Upgrade Alloy chart
+      include_role:
+        name: k3s/alloy
+      when: alloy_deployed_version | default('') != alloy_chart_version
+
+- name: roeden | Uptime Kuma upgrade
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read deployed Uptime Kuma chart version
+      command: >
+        helm list -n {{ observability_namespace }}
+        --filter ^uptime-kuma$
+        --kubeconfig /etc/rancher/k3s/k3s.yaml
+        -o json
+      register: uptime_kuma_helm_list
+      changed_when: false
+      failed_when: false
+
+    - name: Parse deployed Uptime Kuma chart version
+      set_fact:
+        uptime_kuma_deployed_version: >-
+          {{ (uptime_kuma_helm_list.stdout | from_json | first).chart
+             | default('')
+             | regex_replace('^uptime-kuma-', '') }}
+      when: uptime_kuma_helm_list.rc == 0 and uptime_kuma_helm_list.stdout | length > 2
+
+    - name: Skip Uptime Kuma — already at target
+      debug:
+        msg: "Uptime Kuma already at {{ uptime_kuma_chart_version }}"
+      when: uptime_kuma_deployed_version | default('') == uptime_kuma_chart_version
+
+    - name: Upgrade Uptime Kuma chart
+      include_role:
+        name: k3s/uptime_kuma
+      when: uptime_kuma_deployed_version | default('') != uptime_kuma_chart_version
+
+- name: roeden | postgres-proxy (HAProxy) upgrade
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read running postgres-haproxy image
+      command: >
+        kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+        get deploy -n {{ postgres_proxy_namespace }} postgres-haproxy
+        -o jsonpath={.spec.template.spec.containers[0].image}
+      register: postgres_proxy_running
+      changed_when: false
+      failed_when: false
+
+    - name: Skip postgres-proxy — already at target
+      debug:
+        msg: "postgres-proxy already at {{ postgres_proxy_image }}"
+      when: postgres_proxy_running.stdout == postgres_proxy_image
+
+    - name: Apply target postgres-proxy
+      when: postgres_proxy_running.stdout != postgres_proxy_image
+      block:
+        - name: Re-render postgres-proxy resources
+          include_role:
+            name: k3s/postgres_proxy
+
+        - name: Wait for postgres-haproxy Deployment rollout to complete
+          command: >
+            kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+            rollout status deploy/postgres-haproxy -n {{ postgres_proxy_namespace }}
+            --timeout=180s
+          changed_when: false
+
+- name: roeden | Valkey upgrade
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read running Valkey image
+      command: >
+        kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+        get deploy -n {{ valkey_namespace }} valkey
+        -o jsonpath={.spec.template.spec.containers[0].image}
+      register: valkey_running
+      changed_when: false
+      failed_when: false
+
+    - name: Skip Valkey — already at target
+      debug:
+        msg: "Valkey already at {{ valkey_image }}"
+      when: valkey_running.stdout == valkey_image
+
+    - name: Apply target Valkey
+      when: valkey_running.stdout != valkey_image
+      block:
+        - name: Re-render Valkey resources
+          include_role:
+            name: k3s/valkey
+
+        - name: Wait for Valkey Deployment rollout to complete
+          command: >
+            kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+            rollout status deploy/valkey -n {{ valkey_namespace }}
+            --timeout=180s
+          changed_when: false
+
+- name: roeden | Authentik upgrade
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read deployed Authentik chart version
+      command: >
+        helm list -n {{ authentik_namespace }}
+        --filter ^authentik$
+        --kubeconfig /etc/rancher/k3s/k3s.yaml
+        -o json
+      register: authentik_helm_list
+      changed_when: false
+      failed_when: false
+
+    - name: Parse deployed Authentik chart version
+      set_fact:
+        authentik_deployed_version: >-
+          {{ (authentik_helm_list.stdout | from_json | first).chart
+             | default('')
+             | regex_replace('^authentik-', '') }}
+      when: authentik_helm_list.rc == 0 and authentik_helm_list.stdout | length > 2
+
+    - name: Skip Authentik — already at target
+      debug:
+        msg: "Authentik already at {{ authentik_chart_version }}"
+      when: authentik_deployed_version | default('') == authentik_chart_version
+
+    - name: Upgrade Authentik chart
+      include_role:
+        name: k3s/authentik
+      when: authentik_deployed_version | default('') != authentik_chart_version
 
 - name: roeden | internal leaf cert renewal
   hosts: k3s-cp1

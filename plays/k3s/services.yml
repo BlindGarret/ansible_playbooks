@@ -2,13 +2,73 @@
 # Platform services that sit on top of the cluster + ingress tier.
 #   - NFS subdir external provisioner (StorageClass backed by the NAS)
 #   - ArgoCD (GitOps control plane, exposed via internal Gateway)
+#   - kube-prometheus-stack (Prometheus + Alertmanager → Discord + Grafana)
+#   - Loki + Grafana Alloy (log aggregation, auto-collected from every pod)
+#   - Tempo (distributed tracing — Alloy also receives OTLP and forwards here)
+#   - Uptime Kuma (external uptime probes + Discord notifications)
+#   - postgres-proxy (HAProxy in postgres ns, fronts external PG cluster)
+#   - Authentik (SSO, uses external PG via the proxy)
+#
+# Also provisions per-app databases on the external Postgres cluster.
 #
 # Run order for a fresh cluster:
-#   1. plays/k3s/bootstrap.yml
-#   2. plays/k3s/ingress.yml
-#   3. plays/k3s/services.yml  (this)
+#   1. plays/postgres/bootstrap.yml
+#   2. plays/k3s/bootstrap.yml
+#   3. plays/k3s/ingress.yml
+#   4. plays/k3s/services.yml  (this)
 #
-# Idempotent — re-run after editing any of the services' vars.
+# Idempotent — re-run after editing any of the services' vars or after adding
+# a new entry to postgres_databases in group_vars/all.yml.
+
+# Auto-generate the Authentik random secrets if missing. Once generated, they
+# stay forever; rotating them requires coordinating Authentik + Postgres.
+- name: roeden | bootstrap services random secrets if missing
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: ../../roles/local/ensure_random_secrets
+      vars:
+        ensure_random_secrets:
+          - path: "{{ authentik_secret_key_path }}"
+            description: "Authentik session/token signing key"
+            bytes: 60
+          - path: "{{ authentik_postgres_password_path }}"
+            description: "Authentik Postgres password"
+          - path: "{{ valkey_password_path }}"
+            description: "Valkey shared-cache password"
+          - path: "{{ grafana_postgres_password_path }}"
+            description: "Grafana Postgres password"
+          - path: "{{ grafana_oidc_client_secret_path }}"
+            description: "Grafana OIDC client secret (shared between Authentik + Grafana)"
+          - path: "{{ argocd_oidc_client_secret_path }}"
+            description: "ArgoCD OIDC client secret (shared between Authentik + ArgoCD)"
+
+# Guard for the user-provided Discord webhook URL (used by Alertmanager).
+- name: roeden | require user-provided services secrets
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: ../../roles/local/require_user_secrets
+      vars:
+        require_user_secrets:
+          - path: "{{ discord_webhook_path }}"
+            description: "Discord webhook URL (Alertmanager notifications)"
+            instructions: |
+              In Discord: channel settings → Integrations → Webhooks →
+              New Webhook → Copy Webhook URL. Then on the controller:
+                echo -n 'WEBHOOK-URL-FROM-DISCORD' > artifacts/discord-webhook-url
+                chmod 600 artifacts/discord-webhook-url
+
+# Provision the per-app databases on the Postgres cluster. Idempotent —
+# adding a new app means appending to the `postgres_databases` list in
+# group_vars/all.yml and re-running. Runs against whichever pg-XX is the
+# current Patroni leader.
+- name: roeden | ensure Postgres databases for apps
+  hosts: postgres_servers
+  become: true
+  gather_facts: false
+  roles:
+    - role: ../../roles/postgres/manage_databases
 
 - name: roeden | platform services
   hosts: k3s-cp1
@@ -18,3 +78,15 @@
     - role: ../../roles/k3s/admin_tools
     - role: ../../roles/k3s/nfs_provisioner
     - role: ../../roles/k3s/argocd
+    - role: ../../roles/k3s/kube_prometheus_stack
+    - role: ../../roles/k3s/loki
+    - role: ../../roles/k3s/tempo
+    - role: ../../roles/k3s/alloy
+    - role: ../../roles/k3s/uptime_kuma
+    # postgres_proxy (HAProxy) must be up before authentik, since authentik
+    # connects to postgres-rw.postgres.svc:5432 the moment its pod starts.
+    - role: ../../roles/k3s/postgres_proxy
+    # valkey is the shared Redis-protocol cache; authentik connects to
+    # valkey.valkey.svc:6379 the moment its pod starts, so it goes first.
+    - role: ../../roles/k3s/valkey
+    - role: ../../roles/k3s/authentik

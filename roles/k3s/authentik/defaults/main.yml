@@ -1,0 +1,7 @@
+---
+authentik_chart_repo: https://charts.goauthentik.io
+authentik_chart_name: authentik
+authentik_release_name: authentik
+authentik_kubeconfig: /etc/rancher/k3s/k3s.yaml
+authentik_tls_secret_name: internal-tls
+authentik_ingress_class: traefik-internal

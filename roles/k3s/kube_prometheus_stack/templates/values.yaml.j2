@@ -1,0 +1,164 @@
+# kube-prometheus-stack values — managed by ansible.
+
+# In k3s, the control plane is a single binary; the standard scrape configs for
+# kube-controller-manager / kube-scheduler / kube-proxy / etcd target Service
+# endpoints that don't exist as discrete services. Disable them — useful metrics
+# still come through via kubelet + apiserver + node-exporter + kube-state-metrics.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeEtcd:
+  enabled: false
+
+# Grafana — exposed via the internal Gateway. The Ingress here lives in the
+# observability namespace and references its own internal-tls Secret (created
+# by this role and refreshed by internal_leaf_cert on cert rotation).
+grafana:
+  defaultDashboardsTimezone: browser
+  # Dashboards, users, settings all live in the external HA Postgres cluster
+  # (database 'grafana', user 'grafana'). Grafana creates its own schema on
+  # first start. No PVC needed — Grafana itself is stateless once the DB
+  # is external, so you can also bump replicas freely.
+  #
+  # SSO via Authentik (OIDC). The OAuth2 Provider is created by the Authentik
+  # blueprint at roles/k3s/authentik/templates/blueprints/grafana-oidc.yaml.j2.
+  # Login flow: browser → Grafana → "Sign in with Authentik" → auth.roeden.lab
+  # → log in as your Authentik user → bounced back to Grafana, role mapped from
+  # Authentik group membership (admins group => Grafana Admin, else Viewer).
+  #
+  # Secrets via env var (assertNoLeakedSecrets in the chart bars literals):
+  #   - GF_DATABASE_PASSWORD ← grafana-pg-secret (Postgres)
+  #   - GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET ← grafana-oidc-secret (OIDC client_secret)
+  # The internal CA is mounted at /etc/grafana/internal-ca/ca.crt so Grafana's
+  # server-to-server token exchange validates auth.roeden.lab's TLS cert.
+  grafana.ini:
+    database:
+      type: postgres
+      host: "{{ postgres_proxy_service_name | default('postgres-rw') }}.{{ postgres_proxy_namespace | default('postgres') }}.svc:5432"
+      name: grafana
+      user: grafana
+      password: $__env{GF_DATABASE_PASSWORD}
+      ssl_mode: disable
+    server:
+      root_url: "https://{{ grafana_hostname }}"
+    auth:
+      # Hide the user/password form once OIDC works — keeps everyone on SSO.
+      disable_login_form: true
+      oauth_auto_login: false
+    "auth.generic_oauth":
+      enabled: true
+      name: Authentik
+      icon: signin
+      allow_sign_up: true
+      client_id: grafana
+      client_secret: $__env{GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET}
+      scopes: "openid profile email groups"
+      auth_url: "https://{{ authentik_hostname }}/application/o/authorize/"
+      token_url: "https://{{ authentik_hostname }}/application/o/token/"
+      api_url: "https://{{ authentik_hostname }}/application/o/userinfo/"
+      # Validate auth.roeden.lab's cert against our internal CA.
+      tls_client_ca: /etc/grafana/internal-ca/ca.crt
+      # Maps Authentik group → Grafana role. Admins group → Admin, else Viewer.
+      # JMESPath operates on the userinfo JSON; the "groups" claim is emitted
+      # by the custom scope mapping in the Grafana OIDC blueprint.
+      role_attribute_path: "contains(groups[*], '{{ grafana_admins_group_name }}') && 'Admin' || 'Viewer'"
+  envValueFrom:
+    GF_DATABASE_PASSWORD:
+      secretKeyRef:
+        name: grafana-pg-secret
+        key: password
+    GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET:
+      secretKeyRef:
+        name: grafana-oidc-secret
+        key: client-secret
+  extraSecretMounts:
+    - name: internal-ca
+      secretName: internal-ca
+      defaultMode: 0440
+      mountPath: /etc/grafana/internal-ca
+      readOnly: true
+  ingress:
+    enabled: true
+    ingressClassName: traefik-internal
+    hosts:
+      - "{{ grafana_hostname }}"
+    tls:
+      - hosts:
+          - "{{ grafana_hostname }}"
+        secretName: "{{ kps_tls_secret_name }}"
+  # Initial admin password lives in a Secret created by the chart on first
+  # install; only useful as a break-glass if SSO is broken. Retrieve with:
+  #   kubectl -n {{ observability_namespace }} get secret kps-grafana \
+  #     -o jsonpath='{.data.admin-password}' | base64 -d
+  # Day-to-day, log in via Authentik.
+  persistence:
+    enabled: false
+
+# Prometheus — TSDB on NFS, 30d retention. ServiceMonitor/PodMonitor selectors
+# default to "any matching" so app charts can drop a ServiceMonitor in their
+# own namespace and Prometheus picks it up without per-app config.
+prometheus:
+  prometheusSpec:
+    retention: 30d
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: nfs-client
+          resources:
+            requests:
+              storage: 50Gi
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+
+# Alertmanager — Discord webhook receiver. The {% raw %}{{ ... }}{% endraw %}
+# blocks below are Alertmanager's own Go templates and must NOT be rendered by
+# ansible — {% raw %}{% endraw %} keeps them literal through Jinja.
+alertmanager:
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: nfs-client
+          resources:
+            requests:
+              storage: 5Gi
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: discord-notifications
+      group_by: ['alertname', 'namespace', 'severity']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      routes:
+        # KPS ships a 'Watchdog' alert that fires every 5 minutes by design —
+        # it's a heartbeat to prove the alerting pipeline is alive. Silence it
+        # so it doesn't spam Discord; we'll know things work because real
+        # alerts will arrive.
+        - matchers:
+            - alertname = "Watchdog"
+          receiver: 'null'
+    receivers:
+      # Used to silently drop Watchdog (and anything else the chart routes
+      # to 'null' in its bundled rules). Must exist or the chart's default
+      # rules reference an undefined receiver and Alertmanager fails to start.
+      - name: 'null'
+      - name: discord-notifications
+        discord_configs:
+          - send_resolved: true
+            webhook_url: "{{ lookup('file', playbook_dir ~ '/' ~ discord_webhook_path) | trim }}"
+            # Alertmanager uses Go text/template — no Sprig 'default' filter,
+            # and avoid Go's 'with' / 'set' since those collide with Jinja
+            # keywords even inside raw blocks. Stick to 'if' fallbacks.
+            title: '{% raw %}{{ if eq .Status "firing" }}🚨 FIRING{{ else }}✅ RESOLVED{{ end }}: {{ .CommonLabels.alertname }}{% endraw %}'
+            message: |
+              {% raw %}{{ range .Alerts -}}
+              **{{ .Labels.alertname }}**{{ if .Labels.severity }} ({{ .Labels.severity }}){{ end }}
+              {{ if .Annotations.description }}{{ .Annotations.description }}{{ else if .Annotations.summary }}{{ .Annotations.summary }}{{ else }}(no description){{ end }}
+              {{ end }}{% endraw %}

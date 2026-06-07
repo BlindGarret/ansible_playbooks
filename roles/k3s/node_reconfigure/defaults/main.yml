@@ -1,0 +1,4 @@
+---
+k3s_kubeconfig_remote: /etc/rancher/k3s/k3s.yaml
+drain_delegate: "{{ (groups['k3s_servers'] | difference([inventory_hostname]))[0] }}"
+k3s_unit: "{{ 'k3s' if 'k3s_servers' in group_names else 'k3s-agent' }}"

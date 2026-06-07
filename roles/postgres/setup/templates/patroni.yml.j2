@@ -1,0 +1,80 @@
+# Patroni configuration — managed by ansible.
+
+scope: {{ postgres_cluster_name }}
+namespace: /db/
+name: {{ inventory_hostname }}
+
+restapi:
+  listen: 0.0.0.0:{{ patroni_restapi_port }}
+  connect_address: {{ ansible_host }}:{{ patroni_restapi_port }}
+
+etcd3:
+  hosts:
+{% for h in groups['postgres_servers'] %}
+    - {{ hostvars[h].ansible_host }}:{{ etcd_client_port }}
+{% endfor %}
+
+bootstrap:
+  # DCS-level settings (apply to the whole cluster, stored in etcd on init)
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+        wal_level: replica
+        hot_standby: "on"
+        max_wal_senders: 10
+        max_replication_slots: 10
+        wal_log_hints: "on"
+
+  initdb:
+    - encoding: UTF8
+    - data-checksums
+    - locale: en_US.UTF-8
+
+  pg_hba:
+    - host replication replicator {{ postgres_cluster_subnet }} scram-sha-256
+    - host all all {{ postgres_cluster_subnet }} scram-sha-256
+    - host all all {{ k3s_pod_cidr }} scram-sha-256
+    - host all all 127.0.0.1/32 scram-sha-256
+    - local all all peer
+
+  users:
+    admin:
+      password: "{{ lookup('file', playbook_dir ~ '/' ~ postgres_superuser_password_path) | trim }}"
+      options:
+        - createrole
+        - createdb
+
+postgresql:
+  listen: 0.0.0.0:{{ postgres_listen_port }}
+  connect_address: {{ ansible_host }}:{{ postgres_listen_port }}
+  data_dir: /var/lib/postgresql/{{ postgres_major_version }}/main
+  bin_dir: /usr/lib/postgresql/{{ postgres_major_version }}/bin
+  pgpass: /var/lib/postgresql/.pgpass_patroni
+  authentication:
+    replication:
+      username: replicator
+      password: "{{ lookup('file', playbook_dir ~ '/' ~ postgres_replication_password_path) | trim }}"
+    superuser:
+      username: postgres
+      password: "{{ lookup('file', playbook_dir ~ '/' ~ postgres_superuser_password_path) | trim }}"
+    rewind:
+      username: rewind_user
+      password: "{{ lookup('file', playbook_dir ~ '/' ~ postgres_replication_password_path) | trim }}"
+  parameters:
+    shared_buffers: {{ postgres_shared_buffers }}
+    effective_cache_size: {{ postgres_effective_cache_size }}
+    work_mem: {{ postgres_work_mem }}
+    maintenance_work_mem: {{ postgres_maintenance_work_mem }}
+    max_connections: {{ postgres_max_connections }}
+
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonefrom: false
+  nosync: false

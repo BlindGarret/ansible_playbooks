@@ -3,6 +3,13 @@
 token: "{{ k3s_token }}"
 write-kubeconfig-mode: "0644"
 
+# Use a host-search-stripped resolv.conf for pod DNS — see common_prereqs.
+kubelet-arg:
+  - "resolv-conf=/etc/k3s-resolv.conf"
+  - "container-log-max-size=10Mi"
+  - "container-log-max-files=3"
+
+
 {% if k3s_cluster_init | default(false) %}
 cluster-init: true
 {% else %}
@@ -33,4 +40,8 @@ node-taint:
 # --- k3s agent ---
 token: "{{ k3s_token }}"
 server: "{{ k3s_api_server_url }}"
+
+# Use a host-search-stripped resolv.conf for pod DNS — see common_prereqs.
+kubelet-arg:
+  - "resolv-conf=/etc/k3s-resolv.conf"
 {% endif %}

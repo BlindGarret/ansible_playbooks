@@ -1,0 +1,6 @@
+---
+# Caller provides this list. Each entry:
+#   path:         relative-to-playbook (matches our existing var pattern)
+#   description:  short human label
+#   instructions: how to create the file (shown in the error message)
+require_user_secrets: []

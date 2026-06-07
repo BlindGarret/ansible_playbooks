@@ -1,0 +1,3 @@
+---
+postgres_proxy_kubeconfig: /etc/rancher/k3s/k3s.yaml
+postgres_proxy_service_name: postgres-rw

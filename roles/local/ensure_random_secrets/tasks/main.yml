@@ -1,0 +1,40 @@
+---
+# Generate-if-missing for random secrets that just need to exist once. Runs
+# on the controller (localhost) — secrets live in artifacts/, not on remote
+# hosts. Existing files are left untouched (no rotation).
+
+- name: Check whether each secret already exists
+  stat:
+    path: "{{ playbook_dir }}/{{ item.path }}"
+  register: secret_stats
+  loop: "{{ ensure_random_secrets }}"
+  loop_control:
+    label: "{{ item.description | default(item.path) }}"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Generate missing secrets with openssl rand
+  shell: >-
+    umask 077 &&
+    openssl rand -base64 {{ item.item.bytes | default(32) }} | tr -d '\n'
+    > "{{ playbook_dir }}/{{ item.item.path }}"
+  args:
+    executable: /bin/bash
+  loop: "{{ secret_stats.results }}"
+  loop_control:
+    label: "{{ item.item.description | default(item.item.path) }}"
+  when: not item.stat.exists
+  delegate_to: localhost
+  become: false
+
+- name: Ensure 0600 perms on all secrets (existing + freshly generated)
+  file:
+    path: "{{ playbook_dir }}/{{ item.path }}"
+    mode: "0600"
+  loop: "{{ ensure_random_secrets }}"
+  loop_control:
+    label: "{{ item.description | default(item.path) }}"
+  delegate_to: localhost
+  become: false
+  changed_when: false

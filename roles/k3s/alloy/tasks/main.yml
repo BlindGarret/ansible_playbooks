@@ -1,0 +1,18 @@
+---
+- name: Render Alloy chart values
+  template:
+    src: values.yaml.j2
+    dest: /tmp/alloy-values.yaml
+    mode: "0644"
+
+- name: Install/upgrade Alloy chart
+  kubernetes.core.helm:
+    name: "{{ alloy_release_name }}"
+    chart_ref: "{{ alloy_chart_name }}"
+    chart_repo_url: "{{ alloy_chart_repo }}"
+    chart_version: "{{ alloy_chart_version }}"
+    namespace: "{{ observability_namespace }}"
+    values_files:
+      - /tmp/alloy-values.yaml
+    kubeconfig: "{{ alloy_kubeconfig }}"
+    wait: true

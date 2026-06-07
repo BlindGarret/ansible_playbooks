@@ -1,0 +1,95 @@
+---
+- name: Ensure observability namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ kps_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ observability_namespace }}"
+
+# Ingress TLS Secret for Grafana — same pattern as ArgoCD. internal_leaf_cert
+# refreshes this Secret automatically when the cert rotates.
+- name: Create internal-tls Secret in observability namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ kps_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: kubernetes.io/tls
+      metadata:
+        name: "{{ kps_tls_secret_name }}"
+        namespace: "{{ observability_namespace }}"
+      data:
+        tls.crt: "{{ lookup('file', playbook_dir ~ '/' ~ internal_cert_path) | b64encode }}"
+        tls.key: "{{ lookup('file', playbook_dir ~ '/' ~ internal_cert_key_path) | b64encode }}"
+
+# Grafana's PG password — mounted into the Grafana pod as GF_DATABASE_PASSWORD
+# env var, then referenced from grafana.ini via $__env{GF_DATABASE_PASSWORD}.
+# The Grafana chart's assertNoLeakedSecrets refuses to render literal passwords
+# into the rendered manifest, so this env-var indirection is required.
+- name: Create Grafana Postgres Secret in observability namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ kps_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: Opaque
+      metadata:
+        name: grafana-pg-secret
+        namespace: "{{ observability_namespace }}"
+      stringData:
+        password: "{{ lookup('file', playbook_dir ~ '/' ~ grafana_postgres_password_path) | trim }}"
+
+# Grafana OIDC client_secret — mirror of the same Secret in authentik ns.
+- name: Create Grafana OIDC client_secret in observability namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ kps_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: Opaque
+      metadata:
+        name: grafana-oidc-secret
+        namespace: "{{ observability_namespace }}"
+      stringData:
+        client-secret: "{{ lookup('file', playbook_dir ~ '/' ~ grafana_oidc_client_secret_path) | trim }}"
+
+# Internal CA — Grafana's server-to-server token exchange hits auth.roeden.lab,
+# which serves a cert signed by this CA. Mounted into the pod and referenced
+# from grafana.ini's [auth.generic_oauth] tls_client_ca.
+- name: Create internal-ca Secret in observability namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ kps_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: Opaque
+      metadata:
+        name: internal-ca
+        namespace: "{{ observability_namespace }}"
+      stringData:
+        ca.crt: "{{ lookup('file', playbook_dir ~ '/' ~ internal_ca_path) }}"
+
+- name: Render kube-prometheus-stack values
+  template:
+    src: values.yaml.j2
+    dest: /tmp/kps-values.yaml
+    mode: "0600"   # contains the Discord webhook URL
+
+- name: Install/upgrade kube-prometheus-stack chart
+  kubernetes.core.helm:
+    name: "{{ kps_release_name }}"
+    chart_ref: "{{ kps_chart_name }}"
+    chart_repo_url: "{{ kps_chart_repo }}"
+    chart_version: "{{ kps_chart_version }}"
+    namespace: "{{ observability_namespace }}"
+    values_files:
+      - /tmp/kps-values.yaml
+    kubeconfig: "{{ kps_kubeconfig }}"
+    wait: true

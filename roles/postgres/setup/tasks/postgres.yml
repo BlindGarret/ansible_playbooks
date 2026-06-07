@@ -1,0 +1,56 @@
+---
+# Install Postgres from PGDG (gives us a current version, not Ubuntu's older one).
+# We DON'T start it ourselves — Patroni manages the postgres process. The auto-
+# created `main` cluster from the apt package gets dropped so Patroni can initdb
+# its own.
+
+- name: Add PGDG signing key
+  get_url:
+    url: "{{ postgres_pgdg_key_url }}"
+    dest: /etc/apt/trusted.gpg.d/postgresql.asc
+    mode: "0644"
+
+- name: Detect Ubuntu codename
+  shell: lsb_release -cs
+  register: ubuntu_codename
+  changed_when: false
+
+- name: Add PGDG apt repo
+  apt_repository:
+    repo: "deb {{ postgres_pgdg_repo }} {{ ubuntu_codename.stdout }}-pgdg main"
+    state: present
+    filename: pgdg
+    update_cache: true
+
+- name: Install Postgres {{ postgres_major_version }}
+  apt:
+    name:
+      - "postgresql-{{ postgres_major_version }}"
+      - "postgresql-client-{{ postgres_major_version }}"
+      - "postgresql-contrib-{{ postgres_major_version }}"
+    state: present
+
+- name: Disable the system postgresql service (Patroni starts pg, not systemd)
+  systemd:
+    name: postgresql
+    enabled: false
+    state: stopped
+
+- name: Check if the auto-created 'main' cluster exists
+  stat:
+    path: "/var/lib/postgresql/{{ postgres_major_version }}/main/PG_VERSION"
+  register: pg_main_stat
+
+# pg_dropcluster also stops the cluster + removes systemd unit for it,
+# so Patroni's initdb has clean ground to work with.
+- name: Drop auto-created 'main' Postgres cluster
+  command: "pg_dropcluster --stop {{ postgres_major_version }} main"
+  when: pg_main_stat.stat.exists
+
+- name: Ensure /var/lib/postgresql/{{ postgres_major_version }}/main exists and is owned by postgres
+  file:
+    path: "/var/lib/postgresql/{{ postgres_major_version }}/main"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0700"

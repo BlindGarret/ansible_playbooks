@@ -1,0 +1,18 @@
+[Unit]
+Description=Patroni - PostgreSQL HA orchestrator
+After=etcd.service network-online.target
+Wants=etcd.service network-online.target
+
+[Service]
+Type=simple
+User=postgres
+Group=postgres
+ExecStart={{ patroni_install_dir }}/bin/patroni /etc/patroni/patroni.yml
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+TimeoutSec=30
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target

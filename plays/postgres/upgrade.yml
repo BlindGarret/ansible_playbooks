@@ -1,0 +1,149 @@
+---
+# Rolling upgrade of the Postgres tier components.
+#
+# Each phase upgrades ONE component across the cluster, serial: 1, in order
+# safe for HA (replicas first, then leader; Patroni handles the actual leader
+# switchover when its node restarts).
+#
+# Bump the corresponding var in group_vars/all.yml before running:
+#   postgres_etcd_version       — bumps etcd binary
+#   (patroni is pip-installed via pip 'latest'; re-runs install role)
+#   postgres_major_version      — DON'T BUMP without manual pg_upgrade dance
+#
+# The play is structured but per-phase upgrade logic is intentionally minimal
+# right now — etcd / Patroni upgrades each need a careful sequence. Flesh out
+# each phase the first time it's needed.
+
+# ---- Phase 1: etcd binary upgrade ----
+- name: roeden | etcd rolling upgrade
+  hosts: postgres_servers
+  become: true
+  gather_facts: false
+  serial: 1
+  max_fail_percentage: 0
+  tasks:
+    - name: Read currently installed etcd version
+      shell: /usr/local/bin/etcd --version | head -1 | awk '{print $NF}'
+      register: etcd_installed
+      changed_when: false
+
+    - name: Skip — etcd already at target
+      debug:
+        msg: "{{ inventory_hostname }}: etcd already at {{ postgres_etcd_version }}"
+      when: etcd_installed.stdout == postgres_etcd_version
+
+    - name: Upgrade etcd on this node
+      when: etcd_installed.stdout != postgres_etcd_version
+      block:
+        - name: Re-run setup role's etcd tasks (downloads + installs target version)
+          include_role:
+            name: postgres/setup
+            tasks_from: etcd.yml
+
+        - name: Wait for etcd cluster to be healthy with this node back in
+          shell: /usr/local/bin/etcdctl --endpoints=http://127.0.0.1:{{ etcd_client_port }} endpoint health
+          register: etcd_health_after
+          retries: 30
+          delay: 5
+          until: etcd_health_after.rc == 0
+          changed_when: false
+
+# ---- Phase 2: Patroni pip-package upgrade ----
+- name: roeden | Patroni rolling upgrade
+  hosts: postgres_servers
+  become: true
+  gather_facts: false
+  serial: 1
+  max_fail_percentage: 0
+  tasks:
+    - name: Upgrade Patroni inside venv
+      pip:
+        name: "patroni[{{ patroni_pip_extras }}]"
+        state: latest
+        virtualenv: "{{ patroni_install_dir }}"
+      register: patroni_upgrade
+
+    - name: Restart Patroni so the new binary takes effect
+      systemd:
+        name: patroni
+        state: restarted
+      when: patroni_upgrade.changed
+
+    - name: Wait for Patroni REST API after restart
+      wait_for:
+        host: "{{ ansible_host }}"
+        port: "{{ patroni_restapi_port }}"
+        timeout: 120
+
+    - name: Wait for cluster quorum (one leader still elected)
+      shell: |
+        {{ patroni_install_dir }}/bin/patronictl -c /etc/patroni/patroni.yml list -f json \
+          | python3 -c 'import sys, json; print(sum(1 for r in json.load(sys.stdin) if r.get("Role") == "Leader"))'
+      register: leader_after_restart
+      retries: 30
+      delay: 5
+      until: leader_after_restart.stdout | int == 1
+      changed_when: false
+      run_once: true
+      delegate_to: "{{ groups['postgres_servers'][0] }}"
+
+# ---- Phase 3: Postgres minor upgrade (e.g. 16.4 → 16.5) ----
+# Major-version upgrades (16 → 17) are intentionally NOT here; they need
+# pg_upgrade orchestration that's separate from this rolling-restart pattern.
+- name: roeden | Postgres minor-version rolling upgrade
+  hosts: postgres_servers
+  become: true
+  gather_facts: false
+  serial: 1
+  max_fail_percentage: 0
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: true
+        cache_valid_time: 0
+
+    - name: Upgrade postgresql-{{ postgres_major_version }} packages
+      apt:
+        name:
+          - "postgresql-{{ postgres_major_version }}"
+          - "postgresql-client-{{ postgres_major_version }}"
+          - "postgresql-contrib-{{ postgres_major_version }}"
+        state: latest
+
+    - name: Restart Patroni (triggers controlled Postgres restart, fails over if leader)
+      systemd:
+        name: patroni
+        state: restarted
+
+    - name: Wait for this node's Postgres to be reachable again
+      wait_for:
+        host: "{{ ansible_host }}"
+        port: "{{ postgres_listen_port }}"
+        timeout: 120
+
+    - name: Wait for cluster to still have one leader
+      shell: |
+        {{ patroni_install_dir }}/bin/patronictl -c /etc/patroni/patroni.yml list -f json \
+          | python3 -c 'import sys, json; print(sum(1 for r in json.load(sys.stdin) if r.get("Role") == "Leader"))'
+      register: leader_after_pg
+      retries: 30
+      delay: 5
+      until: leader_after_pg.stdout | int == 1
+      changed_when: false
+      run_once: true
+      delegate_to: "{{ groups['postgres_servers'][0] }}"
+
+- name: roeden | post-upgrade cluster status
+  hosts: k3s-cp1
+  become: false
+  gather_facts: false
+  tasks:
+    - name: Show patroni cluster state
+      command: "{{ patroni_install_dir }}/bin/patronictl -c /etc/patroni/patroni.yml list"
+      register: post_upgrade_status
+      changed_when: false
+      delegate_to: "{{ groups['postgres_servers'][0] }}"
+
+    - name: Cluster state
+      debug:
+        msg: "{{ post_upgrade_status.stdout_lines }}"

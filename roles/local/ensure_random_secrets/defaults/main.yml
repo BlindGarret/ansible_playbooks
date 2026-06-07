@@ -1,0 +1,6 @@
+---
+# Caller provides this list. Each entry:
+#   path:        relative-to-playbook (matches our existing var pattern)
+#   bytes:       optional, defaults to 32
+#   description: optional, shown in task labels
+ensure_random_secrets: []

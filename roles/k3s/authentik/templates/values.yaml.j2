@@ -1,0 +1,117 @@
+# Authentik chart values — uses the external HA Postgres cluster (via the
+# HAProxy in the postgres namespace) and the shared Valkey cache in the
+# valkey namespace. No bundled subcharts.
+
+authentik:
+  # Secret key signs sessions + tokens. Must stay stable across upgrades or
+  # everyone gets logged out and pre-existing tokens are invalidated.
+  secret_key: "{{ lookup('file', playbook_dir ~ '/' ~ authentik_secret_key_path) | trim }}"
+  # External Postgres. The 'authentik' database + user are created by
+  # roles/postgres/manage_databases against the cluster's leader.
+  postgresql:
+    host: "{{ postgres_proxy_service_name | default('postgres-rw') }}.{{ postgres_proxy_namespace | default('postgres') }}.svc"
+    port: 5432
+    name: authentik
+    user: authentik
+    password: "{{ lookup('file', playbook_dir ~ '/' ~ authentik_postgres_password_path) | trim }}"
+  # External Valkey. Same protocol as Redis — Authentik doesn't know the
+  # difference. valkey.valkey.svc:6379, password from artifacts/valkey-password.
+  redis:
+    host: "{{ valkey_service_name | default('valkey') }}.{{ valkey_namespace | default('valkey') }}.svc"
+    port: 6379
+    password: "{{ lookup('file', playbook_dir ~ '/' ~ valkey_password_path) | trim }}"
+  # Error reporting to Sentry — disabled for homelab privacy.
+  error_reporting:
+    enabled: false
+
+# Blueprints — two channels, same /blueprints/ dir Authentik watches.
+#
+# Platform channel: ConfigMap rendered by Ansible, contains everything we
+# version-control in this repo (Grafana OIDC, future ArgoCD OIDC, etc).
+#
+# Apps channel: NFS PVC shared across all custom-app deployments. Each app
+# writes its own *.yaml here via initContainer/Job; Authentik picks them up.
+# Convention for custom apps:
+#   1. Random-generate an OIDC client_secret (or accept user-supplied).
+#   2. Create a k8s Secret in your app's namespace with the secret.
+#   3. Create another Secret with the same value in 'authentik' namespace,
+#      mount it as env var into Authentik (extend authentik.env below — OR
+#      use shared secret naming + label-watching, future improvement).
+#   4. initContainer mounts the authentik-apps-blueprints PVC and writes
+#      apps/<your-app>.yaml referencing the env var via !Env.
+# See roles/k3s/authentik/templates/blueprints/grafana-oidc.yaml.j2 for the
+# canonical example of a blueprint structure.
+{# Hash of every rendered platform blueprint, combined. Injected as a pod
+   annotation below so any blueprint content change re-rolls Authentik pods
+   on helm upgrade — needed because subPath mounts don't propagate live
+   ConfigMap updates. When adding a new blueprint: append it to this list. #}
+{% set blueprints_hash = ((
+     lookup('template', 'blueprints/grafana-oidc.yaml.j2')
+     ~ lookup('template', 'blueprints/argocd-oidc.yaml.j2')
+   ) | hash('sha256'))[:12] %}
+
+global:
+  volumes:
+    - name: platform-blueprints
+      configMap:
+        name: authentik-platform-blueprints
+    - name: apps-blueprints
+      persistentVolumeClaim:
+        claimName: authentik-apps-blueprints
+  volumeMounts:
+    # subPath mount per blueprint file. Plain-dir ConfigMap mounts use a
+    # `..data` symlink for atomic updates; Authentik's discovery walks the
+    # tree and treats any path component starting with `.` as hidden (see
+    # blueprints/v1/tasks.py:128) — which would silently skip our files.
+    # subPath delivers each blueprint as a regular file at the destination,
+    # sidestepping the symlink. Add one mount per new platform blueprint.
+    - name: platform-blueprints
+      mountPath: /blueprints/platform/grafana-oidc.yaml
+      subPath: grafana-oidc.yaml
+      readOnly: true
+    - name: platform-blueprints
+      mountPath: /blueprints/platform/argocd-oidc.yaml
+      subPath: argocd-oidc.yaml
+      readOnly: true
+    - name: apps-blueprints
+      mountPath: /blueprints/apps
+  env:
+    # Injected into both server + worker pods. Read by each blueprint at
+    # apply time via the matching !Env directive. One env var per app.
+    - name: GRAFANA_OIDC_CLIENT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: grafana-oidc-secret
+          key: client-secret
+    - name: ARGOCD_OIDC_CLIENT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: argocd-oidc-secret
+          key: client-secret
+
+server:
+  # Re-roll pods when any platform blueprint changes (subPath mounts don't
+  # propagate live ConfigMap updates).
+  podAnnotations:
+    checksum/blueprints: "{{ blueprints_hash }}"
+  ingress:
+    enabled: true
+    ingressClassName: "{{ authentik_ingress_class }}"
+    hosts:
+      - "{{ authentik_hostname }}"
+    tls:
+      - hosts:
+          - "{{ authentik_hostname }}"
+        secretName: "{{ authentik_tls_secret_name }}"
+
+worker:
+  # One worker pod is plenty at homelab scale.
+  replicas: 1
+  podAnnotations:
+    checksum/blueprints: "{{ blueprints_hash }}"
+
+# Disable both bundled subcharts — we use external services for both tiers.
+postgresql:
+  enabled: false
+redis:
+  enabled: false

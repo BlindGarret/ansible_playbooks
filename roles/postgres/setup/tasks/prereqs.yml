@@ -1,0 +1,22 @@
+---
+# Cloud-init templates sometimes leave dpkg mid-operation; finish whatever
+# was in flight before we try to install anything new. No-op if clean.
+- name: Finish any interrupted dpkg operations
+  command: dpkg --configure -a
+  changed_when: false
+
+- name: Install base packages for build, python venv, libpq, etc.
+  apt:
+    name:
+      - curl
+      - ca-certificates
+      - gnupg
+      - jq
+      - python3
+      - python3-venv
+      - python3-dev
+      - libpq-dev
+      - build-essential
+      - acl   # so 'become_user: postgres' works for unprivileged file writes
+    state: present
+    update_cache: true

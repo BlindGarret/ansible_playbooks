@@ -1,0 +1,19 @@
+---
+# Where Patroni's venv lives — keeps pip-installed Python deps out of the
+# system site-packages.
+patroni_install_dir: /opt/patroni
+patroni_pip_extras: "etcd3"
+
+# Ports
+postgres_listen_port: 5432
+patroni_restapi_port: 8008
+etcd_peer_port: 2380
+etcd_client_port: 2379
+
+# Cluster network (used in pg_hba rules)
+postgres_cluster_subnet: "192.168.10.0/24"
+k3s_pod_cidr: "10.42.0.0/16"
+
+# PGDG apt repo
+postgres_pgdg_repo: "https://apt.postgresql.org/pub/repos/apt"
+postgres_pgdg_key_url: "https://www.postgresql.org/media/keys/ACCC4CF8.asc"

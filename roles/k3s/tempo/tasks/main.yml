@@ -1,0 +1,34 @@
+---
+- name: Ensure observability namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ tempo_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ observability_namespace }}"
+
+- name: Render Tempo chart values
+  template:
+    src: values.yaml.j2
+    dest: /tmp/tempo-values.yaml
+    mode: "0644"
+
+- name: Install/upgrade Tempo chart
+  kubernetes.core.helm:
+    name: "{{ tempo_release_name }}"
+    chart_ref: "{{ tempo_chart_name }}"
+    chart_repo_url: "{{ tempo_chart_repo }}"
+    chart_version: "{{ tempo_chart_version }}"
+    namespace: "{{ observability_namespace }}"
+    values_files:
+      - /tmp/tempo-values.yaml
+    kubeconfig: "{{ tempo_kubeconfig }}"
+    wait: true
+
+- name: Apply Tempo datasource ConfigMap for Grafana
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ tempo_kubeconfig }}"
+    definition: "{{ lookup('template', 'grafana-datasource.yaml.j2') | from_yaml }}"

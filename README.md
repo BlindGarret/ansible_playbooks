@@ -1,8 +1,18 @@
 # Roeden Lab — Ansible Operations
 
-Ansible plays and roles for running the `roeden` homelab: 3 k3s control planes,
-4 k3s agents, supporting infrastructure (NAS, EdgeRouter), and platform
-services (Traefik ingress, cert-manager, NFS storage, ArgoCD).
+Ansible plays and roles for running the `roeden` homelab. Three independent
+infrastructure tiers, each with its own bootstrap / check-updates / upgrade
+lifecycle:
+
+- **Postgres tier** (3 VMs: pg-01/02/03) — HA Postgres via Patroni + etcd
+  quorum. Source of truth for any app needing a real database (Authentik,
+  Grafana, future apps).
+- **k3s cluster** (3 cps + 4 agents) — kubernetes platform. Runs Traefik
+  ingress, cert-manager, NFS storage class, ArgoCD, kube-prometheus-stack
+  (Prom + Alertmanager + Grafana), Loki + Alloy (logs), Tempo (traces),
+  Uptime Kuma, Authentik (SSO).
+- **Lab tier** — every host across both above. Shared OS-level concerns:
+  apt updates with rolling reboots, internal CA trust distribution.
 
 Use this README when future-you doesn't remember which play to run. Every
 section is a working command sequence — copy/paste them in order.
@@ -13,24 +23,36 @@ section is a working command sequence — copy/paste them in order.
 
 ```
 inventories/roeden/
-  hosts.yml                # node IPs + SSH user
+  hosts.yml                # node IPs + SSH user (k3s_servers/agents + postgres_servers)
   group_vars/all.yml       # tracked versions + cluster vars
   host_vars/k3s-cp1.yml    # k3s-cp1 specifics (cluster_init: true)
 
 plays/
+  postgres/
+    bootstrap.yml          # one-time: 3-VM Postgres HA cluster (etcd + pg + patroni)
+    check-updates.yml      # READ-ONLY: drift report for etcd/Patroni/Postgres
+    upgrade.yml            # rolling upgrade of etcd / Patroni / pg minor versions
   k3s/
     bootstrap.yml          # one-time: stand up the k3s cluster from scratch
     ingress.yml            # idempotent: Traefik + cert-manager + Gateways
-    services.yml           # idempotent: NFS provisioner + ArgoCD
+    services.yml           # idempotent: NFS + ArgoCD + KPS + Loki + Alloy + Tempo + Kuma + Authentik
+    reconfigure.yml        # rolling restart for k3s node-level config changes
     check-updates.yml      # READ-ONLY: drift report for every tracked component
     upgrade.yml            # weekly: rolling k3s/component upgrades + cert renewal
   lab/
-    check-os-updates.yml   # READ-ONLY: apt updates available per host
-    rolling-os-updates.yml # rolling apt upgrade + reboot, drains k3s nodes
+    check-os-updates.yml   # READ-ONLY: apt updates available per host (all VMs)
+    rolling-os-updates.yml # rolling apt upgrade + reboot (all VMs, drains k3s nodes)
     trust-internal-cert.yml # push the internal CA cert to every host
 
-roles/                     # see individual roles for details
-artifacts/                 # gitignored — holds secrets and the kubeconfig
+roles/
+  postgres/setup/          # per-VM: etcd + Postgres + Patroni
+  k3s/...                  # k3s install + every cluster-tier role
+  lab/...                  # OS update + trust-cert roles (shared across all VMs)
+  local/
+    ensure_random_secrets  # auto-generate random secrets in artifacts/ if missing
+    require_user_secrets   # fail with instructions if user-provided files missing
+
+artifacts/                 # gitignored — holds secrets, certs, and the kubeconfig
 ```
 
 ---
@@ -59,29 +81,45 @@ Ansible needs the `kubernetes` Python lib for `kubernetes.core.k8s`:
 pipx inject ansible kubernetes pyyaml jsonpatch
 ```
 
-### Files you must put in `artifacts/` yourself
+### Files in `artifacts/` — three categories
 
-These are **gitignored** secrets. Never commit them, never copy them to
-shared places. Generate them as described below, then they live forever on
-the controller (back them up somewhere safe).
+`artifacts/` is gitignored. Three different categories of files end up there:
+
+**1. User-provided (you must create these; plays will hard-fail with
+instructions if missing).** Two roles enforce this — `require_user_secrets`
+on the controller side prints exact "how to make it" instructions if you
+forget.
 
 | File | What it is | How to create |
 |---|---|---|
-| `roeden-ca.crt` | Internal CA cert (trust anchor) | One-time openssl command, see "Initial setup" step 3 |
+| `roeden-ca.crt` | Internal CA cert (trust anchor) | One-time openssl command, see "Initial setup" step 4 |
 | `roeden-ca.key` | Internal CA private key | Same openssl command |
-| `cloudflare-api-token` | Cloudflare DNS-01 API token | Generate in Cloudflare dashboard, paste with `echo -n` |
-| `k3s-token` | k3s cluster join token | `openssl rand -hex 32 > artifacts/k3s-token` |
+| `cloudflare-api-token` | Cloudflare DNS-01 API token | Generate in Cloudflare dashboard (My Profile → API Tokens → Edit zone DNS) |
+| `discord-webhook-url` | Discord webhook for Alertmanager → Discord | Channel settings → Integrations → Webhooks → New Webhook → Copy URL |
 
-### Files that show up in `artifacts/` automatically
-
-You don't create these — the plays do. Just know what they are when you
-see them.
+**2. Auto-generated random secrets (plays create these if missing).** The
+`ensure_random_secrets` role checks at play start and generates with
+`openssl rand` if absent. You shouldn't ever need to make these by hand.
 
 | File | What it is | Created by |
 |---|---|---|
-| `internal-tls.crt` + `.key` | Server cert for `*.roeden.lab`, signed by the CA | `plays/k3s/ingress.yml` (or `upgrade.yml`) the first time it sees no leaf, then renewed when within 30 days of expiry |
+| `k3s-token` | k3s cluster join token | `plays/k3s/bootstrap.yml` |
+| `authentik-secret-key` | Authentik session/token signing key | `plays/k3s/services.yml` |
+| `authentik-postgres-password` | Authentik's Postgres password | `plays/k3s/services.yml` |
+| `grafana-postgres-password` | Grafana's Postgres password | `plays/k3s/services.yml` |
+| `valkey-password` | Shared Valkey cache password | `plays/k3s/services.yml` |
+| `grafana-oidc-client-secret` | Grafana OIDC client_secret (shared with Authentik) | `plays/k3s/services.yml` |
+| `argocd-oidc-client-secret` | ArgoCD OIDC client_secret (shared with Authentik) | `plays/k3s/services.yml` |
+| `postgres-superuser-password` | Postgres cluster admin password | `plays/postgres/bootstrap.yml` |
+| `postgres-replication-password` | Patroni's replication user password | `plays/postgres/bootstrap.yml` |
+
+**3. Outputs from play runs (just show up; harmless).**
+
+| File | What it is | Created by |
+|---|---|---|
+| `internal-tls.crt` + `.key` | Server cert for `*.roeden.lab`, signed by the CA | `plays/k3s/ingress.yml` (or `upgrade.yml`) — auto-generated and auto-renewed |
 | `kubeconfig-roeden.yaml` | k3s admin kubeconfig | `plays/k3s/bootstrap.yml` fetches it from cp1 |
-| `roeden-ca.srl` | openssl serial-number tracker for cert signing | Created the first time the CA signs a cert; harmless |
+| `roeden-ca.srl` | openssl serial-number tracker for cert signing | First time the CA signs a cert; harmless |
 
 ---
 
@@ -115,33 +153,56 @@ Run cadence: **weekly** for security patches.
 
 ---
 
-## Initial Kubernetes setup (fresh cluster, once)
+## Initial setup (fresh-from-zero, once)
 
-This is the bootstrap-from-zero path. Skip this section if the cluster
-already exists.
+The order matters: Postgres before k3s, because some k3s services (Authentik,
+eventually others) treat Postgres as a precondition. Skip this section if
+the cluster already exists.
 
-### 1. Inventory: confirm the node list
+### 1. Inventory: confirm the host list
 
-`inventories/roeden/hosts.yml` should list `k3s_servers` (cp1–cp3) and
-`k3s_agents` (w1–w4) with their static IPs in the `192.168.10.0/24` range.
+`inventories/roeden/hosts.yml` should list three groups:
+- `k3s_servers` (cp1–cp3) at 192.168.10.21–23
+- `k3s_agents` (w1–w4) at 192.168.10.31–34
+- `postgres_servers` (pg-01/02/03) at 192.168.10.41–43
 
-### 2. Drop required secrets into `artifacts/`
+All inherit `ansible_user: infraadmin` + the SSH key from group `all` vars.
+
+### 2. Provision VMs (Proxmox manual — outside ansible's scope)
+
+In Proxmox: clone your cloud-init template for each host. SSH key + user
+should match `infraadmin` from the inventory.
+
+- **k3s nodes**: 4 GB RAM, 2 vCPU, 20 GB disk
+- **Postgres nodes**: 4 GB RAM, 2 vCPU, 50 GB local-ssd disk (one VM per Proxmox host for true HA — pg-01 on proxmox-1, pg-02 on proxmox-2, etc.)
+
+Sanity check controller → all hosts:
+```bash
+ansible -i inventories/roeden/hosts.yml all -m ping
+# Expect all 10 hosts respond
+```
+
+### 3. Drop user-provided secrets into `artifacts/`
 
 ```bash
-# k3s join token — any 32-byte hex string, just keep it consistent for the cluster
-openssl rand -hex 32 > artifacts/k3s-token
-chmod 600 artifacts/k3s-token
-
-# Cloudflare API token (scope: Zone DNS Edit for roedev.com only)
+# Cloudflare API token (scope: Zone DNS Edit for your domain only)
 # Generate at https://dash.cloudflare.com → My Profile → API Tokens
 echo -n 'PASTE-TOKEN-HERE' > artifacts/cloudflare-api-token
 chmod 600 artifacts/cloudflare-api-token
+
+# Discord webhook URL (Alertmanager will pipe alerts here)
+# Discord: channel settings → Integrations → Webhooks → New Webhook
+echo -n 'PASTE-WEBHOOK-URL-HERE' > artifacts/discord-webhook-url
+chmod 600 artifacts/discord-webhook-url
 ```
 
-### 3. Generate the internal CA
+Random secrets like the k3s join token and Postgres passwords don't go here
+— they're auto-generated on first play run if missing.
+
+### 4. Generate the internal CA
 
 The CA is long-lived (10 years) and only signs the leaf cert. The leaf cert
-itself gets auto-generated on first `upgrade.yml` or `ingress.yml` run.
+itself gets auto-generated on first `ingress.yml` run.
 
 ```bash
 openssl req -x509 -nodes -newkey rsa:2048 \
@@ -154,7 +215,35 @@ openssl req -x509 -nodes -newkey rsa:2048 \
 chmod 600 artifacts/roeden-ca.key
 ```
 
-### 4. Bootstrap k3s
+### 5. Push the internal CA to all hosts (k3s + postgres VMs both)
+
+```bash
+ansible-playbook -i inventories/roeden/hosts.yml plays/lab/trust-internal-cert.yml
+```
+
+System trust store on every host now trusts `*.roeden.lab`.
+
+### 6. Bootstrap the Postgres HA cluster
+
+```bash
+ansible-playbook -i inventories/roeden/hosts.yml plays/postgres/bootstrap.yml
+```
+
+What this runs: the localhost play auto-generates Postgres passwords if
+missing, then on all 3 VMs in parallel — install etcd 3.5.x from tarball,
+bootstrap a 3-node etcd cluster, add PGDG apt repo, install Postgres 16,
+disable the systemd PG service (Patroni controls it), pip-install Patroni
+in a `/opt/patroni` venv, render Patroni config, start Patroni. Final
+verification waits for a Leader to be elected and prints `patronictl list`.
+
+Verify:
+```bash
+ssh infraadmin@192.168.10.41 -i ~/.ssh/roeden_infra \
+  '/opt/patroni/bin/patronictl -c /etc/patroni/patroni.yml list'
+# Expect: 1 Leader (state: running) + 2 Replicas (state: streaming)
+```
+
+### 7. Bootstrap k3s
 
 ```bash
 ansible-playbook -i inventories/roeden/hosts.yml plays/k3s/bootstrap.yml
@@ -171,15 +260,7 @@ kubectl get nodes
 # 7 nodes Ready: 3 cps + 4 workers
 ```
 
-### 5. Push the internal CA to all hosts
-
-So every node trusts `*.roeden.lab` without `--insecure`:
-
-```bash
-ansible-playbook -i inventories/roeden/hosts.yml plays/lab/trust-internal-cert.yml
-```
-
-### 6. Install the ingress tier
+### 8. Install the ingress tier
 
 Traefik (two isolated instances on `.51`/`.52`), cert-manager, the two
 Gateways (internal + external), and the wildcard Let's Encrypt cert.
@@ -205,24 +286,34 @@ kubectl -n traefik get certificate
 # external-tls   True   90d
 ```
 
-### 7. Set DNS
+### 9. Set DNS
 
-- **Internal DNS** (Pi-hole / dnsmasq / EdgeRouter): wildcard
-  `*.roeden.lab → 192.168.10.51`.
+- **Internal DNS** (the NAS at 192.168.0.29 serves it): wildcard
+  `*.roeden.lab → 192.168.10.51`. Also serves as upstream for pods —
+  CoreDNS forwards there for both `*.roeden.lab` and external lookups.
 - **Public DNS** (Cloudflare): A record for whatever public hostname you'll
   use (e.g. `home.roedev.com → <your public IP>`, **DNS-only**, grey cloud).
 - **Router NAT**: TDS forwards `:80`/`:443` → `192.168.0.22`, EdgeRouter
   forwards same ports → `192.168.10.52` *only when destination is
   `192.168.0.22`* (so internal `.51` traffic isn't hijacked).
 
-### 8. Install platform services
+### 10. Install platform services
 
 ```bash
 ansible-playbook -i inventories/roeden/hosts.yml plays/k3s/services.yml
 ```
 
-This installs the NFS provisioner (StorageClass `nfs-client`, marked
-default) and ArgoCD (Ingress on `argocd.roeden.lab`).
+Everything that lands in this run:
+1. **NFS provisioner** — `StorageClass nfs-client` marked default
+2. **ArgoCD** — Ingress at `argocd.roeden.lab`
+3. **kube-prometheus-stack** — Prometheus + Alertmanager + Grafana,
+   Ingress at `grafana.roeden.lab`, Alertmanager pointed at Discord webhook
+4. **Loki** — single-binary log aggregator on NFS, 14d retention
+5. **Tempo** — distributed tracing on NFS, 7d retention
+6. **Grafana Alloy** — DaemonSet: collects every pod's stdout to Loki AND
+   receives OTLP traces from apps (forwards to Tempo)
+7. **Uptime Kuma** — Ingress at `uptime.roeden.lab`, external uptime probes
+8. **Authentik** — Ingress at `auth.roeden.lab`, SSO identity provider
 
 Verify:
 ```bash
@@ -234,9 +325,14 @@ kubectl -n argocd get pods
 
 kubectl -n argocd get ingress
 # argocd-server   traefik-internal   argocd.roeden.lab   192.168.10.51
+
+kubectl -n observability get pods
+# kps-grafana, prometheus-kps-..., alertmanager-kps-...,
+# kps-prometheus-node-exporter-* (one per node), kube-state-metrics,
+# loki-0 (2/2 Running), alloy-* (one per node) — all Running
 ```
 
-### 9. Trust the CA on your laptop
+### 11. Trust the CA on your laptop
 
 System:
 ```bash
@@ -256,131 +352,269 @@ tick "Trust this CA to identify websites" → OK.
 
 Restart browsers fully.
 
-### 10. Set up your ArgoCD login
+### 12. Authentik first-login + SSO wiring
 
-See the next section.
-
----
-
-## Setting up ArgoCD with your own login (one-time, after services.yml)
-
-ArgoCD ships with a built-in `admin` user. We want the `lroe` user (declared
-in `roles/k3s/argocd/templates/values.yaml.j2`) to be the only usable
-identity, with admin disabled. ArgoCD doesn't let you create accounts via
-CLI — config has to declare them, then CLI sets the password.
-
-### Phase 1: temporarily leave `admin` enabled so you can set lroe's password
-
-Open `roles/k3s/argocd/templates/values.yaml.j2` and make sure
-`admin.enabled: "false"` is **commented out** (or absent). If you flipped
-it already, comment it back:
-
-```yaml
-configs:
-  cm:
-    accounts.lroe: "apiKey, login"
-    # admin.enabled: "false"     # leave commented during initial bootstrap
-```
-
-Apply:
-```bash
-ansible-playbook -i inventories/roeden/hosts.yml plays/k3s/services.yml
-```
-
-### Phase 2: login as admin, set lroe's password, verify
-
-```bash
-# Grab the auto-generated admin password
-INITIAL_PW=$(kubectl -n argocd get secret argocd-initial-admin-secret \
-  -o jsonpath='{.data.password}' | base64 -d)
-
-# Login as admin via argocd CLI
-argocd login argocd.roeden.lab --username admin --password "$INITIAL_PW"
-
-# Set lroe's password — pick something strong, store in your password manager
-argocd account update-password \
-  --account lroe \
-  --current-password "$INITIAL_PW" \
-  --new-password 'PASTE-NEW-PASSWORD-HERE'
-
-# Verify lroe can log in AND has admin RBAC
-argocd logout argocd.roeden.lab
-argocd login argocd.roeden.lab --username lroe --password 'PASTE-NEW-PASSWORD-HERE'
-argocd account list
-# Should list admin AND lroe; lroe with capabilities "apiKey, login"
-argocd app list
-# Empty list (no apps yet) — but no permission error means RBAC worked.
-```
-
-### Phase 3: disable admin permanently
-
-Edit `roles/k3s/argocd/templates/values.yaml.j2` — **uncomment** the
-`admin.enabled: "false"` line:
-
-```yaml
-configs:
-  cm:
-    accounts.lroe: "apiKey, login"
-    admin.enabled: "false"
-```
-
-Apply:
-```bash
-ansible-playbook -i inventories/roeden/hosts.yml plays/k3s/services.yml
-```
-
-Delete the now-useless initial admin secret:
-```bash
-kubectl -n argocd delete secret argocd-initial-admin-secret
-```
-
-Confirm admin is locked out:
-```bash
-argocd login argocd.roeden.lab --username admin --password "$INITIAL_PW"
-# Expect: "permission denied" / "account disabled"
-```
-
-From this point forward only `lroe` can log in. Password is stored as a
-bcrypt hash in the `argocd-secret` Kubernetes Secret, replicated across all
-three control planes via etcd. It survives pod restarts, chart upgrades,
-node reboots — anything short of `kubectl delete ns argocd`.
-
-### Re-enabling admin (if you ever need to)
-
-Edit `values.yaml.j2`, comment the `admin.enabled: "false"` line back out,
-re-run `services.yml`. Then generate a new initial admin secret:
-```bash
-kubectl -n argocd patch secret argocd-secret \
-  -p '{"stringData": {"admin.password": "$2a$10$NEWBCRYPTHASH...", "admin.passwordMtime": "'$(date +%FT%T%Z)'"}}'
-```
-(Or just bcrypt-hash a known password and patch it in.)
-
-### Rotating lroe's password later
-
-```bash
-argocd login argocd.roeden.lab --username lroe --password 'OLD-PW'
-argocd account update-password \
-  --account lroe \
-  --current-password 'OLD-PW' \
-  --new-password 'NEW-PW'
-```
-
-No ansible run needed — the password lives in `argocd-secret` (in etcd).
+See the "Authentik SSO & blueprints" section below for the akadmin
+recovery → lroe-as-admin → SSO-into-apps walkthrough.
 
 ---
 
-## Kubernetes update operations
+## Authentik SSO & blueprints (the identity story)
+
+All app login goes through Authentik. ArgoCD, Grafana, and any future
+internal app trust Authentik as their OIDC identity provider — no per-app
+local accounts to manage, no separate passwords. The single human step
+on a fresh bootstrap is "set your Authentik password the first time."
+
+### Two channels for declarative Authentik config
+
+Authentik watches `/blueprints/` and applies any YAML it finds. SSO wiring
+for each app — provider, application, group, scope mappings — is expressed
+as a blueprint. No clicking through the UI, fully reproducible from scratch.
+
+**Platform channel — Ansible-managed.** Files at
+`roles/k3s/authentik/templates/blueprints/`. The Authentik role renders
+each template into a single ConfigMap; each blueprint is mounted at
+`/blueprints/platform/<name>.yaml` via a subPath mount (subPath is
+required because plain ConfigMap mounts produce a `..data` symlink dir
+that Authentik's discovery treats as hidden and silently skips). Currently
+in this channel: `grafana-oidc.yaml.j2`, `argocd-oidc.yaml.j2`.
+
+**Apps channel — app-managed, no Ansible touching.** NFS PVC
+`authentik-apps-blueprints` in the `authentik` namespace, mounted at
+`/blueprints/apps/`. Custom apps drop their own `*.yaml` files in here
+at deploy time. Authentik picks them up the same as platform blueprints.
+
+### To add a new platform-tier app to SSO (Ansible side)
+
+1. Create `roles/k3s/authentik/templates/blueprints/<app>-oidc.yaml.j2`.
+   Copy `grafana-oidc.yaml.j2` as a template; change names, scopes, the
+   redirect_uri, and the `!Env <APP>_OIDC_CLIENT_SECRET` reference.
+2. In `roles/k3s/authentik/tasks/main.yml`:
+   - Add a new key under the platform-blueprints ConfigMap data
+     (`<app>-oidc.yaml: "{{ lookup('template', ...) }}"`)
+   - Add a Secret creation task for `<app>-oidc-secret`
+3. In `roles/k3s/authentik/templates/values.yaml.j2`:
+   - Append the new template to the `blueprints_hash` calculation
+   - Add a new subPath mount under `global.volumeMounts`
+   - Add a new env var injection under `global.env` referencing the Secret
+4. In `inventories/roeden/group_vars/all.yml`:
+   - Add `<app>_oidc_client_secret_path` and `<app>_admins_group_name`
+5. In `plays/k3s/services.yml`:
+   - Add the client-secret artifact to the `ensure_random_secrets` list
+6. Wire the app's own chart to use OIDC against Authentik (see how
+   `roles/k3s/argocd/` and `roles/k3s/kube_prometheus_stack/` do it for
+   their respective charts — both create a matching Secret in the app's
+   namespace and reference it from the chart values).
+7. Run `services.yml`. The Authentik role's final task explicitly fires
+   blueprint discovery — when the playbook exits, the new SSO is live.
+
+### To wire a custom app you deploy via ArgoCD (apps channel)
+
+For apps you write later that don't have an Ansible role, the goal is
+"deploy the app → Authentik knows about it → users can SSO into it." Steps:
+
+1. Generate an OIDC client_secret in your app's deployment manifests
+   (random, stored in a Secret in your app's namespace).
+2. Mirror that Secret into the `authentik` namespace (so the blueprint can
+   read it as an env var via `!Env`). Either replicate the Secret via
+   external-secrets/Reflector, or have your app's deploy include a small
+   resource in the authentik namespace.
+3. **Use a Job in the authentik namespace** (or a pre-sync hook in your
+   ArgoCD Application) that:
+   - Mounts the `authentik-apps-blueprints` PVC
+   - Writes `/blueprints/apps/<your-app>.yaml` with the blueprint content
+   - **Triggers Authentik blueprint discovery via `ak shell`** (see below)
+4. Configure your app's chart for OIDC against
+   `https://auth.roeden.lab/application/o/<your-app>/`, using the same
+   client_secret you generated in step 1.
+
+The Job-in-authentik-ns approach sidesteps cross-namespace PVC mounting
+(which is a pain — the PVC lives in `authentik` and your app probably
+doesn't). You're effectively saying "to register with the identity
+provider, run a small init step in the IdP's namespace." Clean separation.
+
+### The discovery trigger — don't forget this
+
+Authentik scans `/blueprints/` on a schedule (every ~10–15 minutes by
+default) AND when the worker pod starts. The pod-startup scan has an
+observed race where freshly-mounted blueprints can be silently skipped on
+the first scan; we hit it during initial setup.
+
+For platform blueprints, this is handled — the Authentik role's final
+task in `services.yml` explicitly fires discovery, so the playbook is
+deterministic: when it exits, blueprints are applied.
+
+For apps-channel blueprints written by your custom apps, **your app
+deployment must trigger discovery itself** or accept the 10-minute wait
+for Authentik's scheduled scan. The trigger is a one-liner:
+
+```bash
+kubectl -n authentik exec deploy/authentik-worker -- \
+  ak shell -c "from authentik.blueprints.v1.tasks import blueprints_discovery; blueprints_discovery.send()"
+```
+
+Bake this into your blueprint-writing initContainer/Job. Without it,
+"deploy app → log in" works "eventually." With it, it works immediately.
+
+### First login, on a fresh bootstrap
+
+The Authentik chart bootstraps a single break-glass user `akadmin` whose
+password lives in a k8s Secret. Steps once Authentik is up:
+
+```bash
+# Generate a one-shot recovery URL for akadmin
+kubectl -n authentik exec deploy/authentik-worker -- \
+  ak create_recovery_key 1 akadmin
+```
+
+Browse the URL, set akadmin's password, log into `auth.roeden.lab`, then:
+
+- *Directory → Users → Create* → username `lroe`, your email, type Internal
+- *Users → lroe → Set password*
+- *Directory → Groups* — `grafana-admins` and `argocd-admins` already exist
+  (created by the blueprints). Add `lroe` to whichever groups you want.
+- Log out as akadmin, log in as lroe, confirm Admin Interface access works.
+- *Users → akadmin → Edit → uncheck "Is active" → Save*. Break-glass account
+  neutralized; you (lroe) are the only meaningful identity.
+
+### Disabling app-level admin accounts
+
+Once SSO works, the per-app local admin accounts (ArgoCD's `admin`,
+Grafana's `admin`) are unnecessary. Both are already disabled in this
+repo's chart values (`admin.enabled: "false"` for ArgoCD; Grafana's login
+form is hidden via `disable_login_form: true`). The chart's auto-generated
+admin password Secrets still exist in each namespace as break-glass — if
+SSO breaks, you can re-enable admin and log in with that password.
+
+---
+
+## Grafana — sidecar password gotcha (rare but important)
+
+Login itself is SSO via Authentik — see the SSO section above. The
+chart's auto-generated `admin` user still exists as break-glass; password
+is in the `kps-grafana` Secret if you ever need to bypass SSO:
+
+```bash
+kubectl -n observability get secret kps-grafana \
+  -o jsonpath='{.data.admin-password}' | base64 -d ; echo
+```
+
+### The sidecar password gotcha
+
+Loki, Tempo, and any future datasources are auto-discovered via the
+sidecar that watches ConfigMaps labeled `grafana_datasource: "1"`. The
+sidecar writes the datasource file to disk AND calls Grafana's reload API
+using the admin password from the `kps-grafana` Secret.
+
+If you've **manually rotated** the admin password via Grafana's API or by
+patching the Secret, the next sidecar reload call **fails with 401**.
+The new datasource lands on disk but Grafana won't load it until it
+restarts.
+
+So: if you ever change the admin password manually, follow up with:
+
+```bash
+kubectl -n observability rollout restart deploy/kps-grafana
+```
+
+In the normal "SSO + don't touch the admin password" flow this never
+fires — the sidecar and the Secret stay in sync. Documenting it for the
+day you ever rotate that break-glass credential.
+
+---
+
+## Discord alerting — what gets sent and what's silenced
+
+Alertmanager is configured (via the `kube_prometheus_stack` role) to
+route every alert to the Discord webhook in `artifacts/discord-webhook-url`.
+Default routing:
+
+- `alertname = "Watchdog"` → **silenced** (it's a 5-minute heartbeat
+  alert that proves the pipeline works; we drop it to a `null` receiver
+  so it doesn't spam Discord)
+- everything else → Discord channel, formatted with severity + description
+
+The Discord channel notification setting matters. If you have the
+channel set to "@mentions only", you won't get phone pushes — change
+to "All Messages" for a dedicated alerts channel.
+
+### Smoke-testing the path
+
+```bash
+# Terminal 1
+kubectl -n observability port-forward svc/kps-kube-prometheus-stack-alertmanager 9093:9093
+
+# Terminal 2
+curl -X POST http://localhost:9093/api/v2/alerts \
+  -H 'Content-Type: application/json' \
+  -d '[{"labels":{"alertname":"TestAlert","severity":"info"},"annotations":{"description":"manual smoke test"}}]'
+
+# Wait ~30s (Alertmanager group_wait) — check Discord
+```
+
+### Rotating the webhook (if leaked or just paranoid)
+
+1. Discord → channel settings → Integrations → delete the old webhook
+2. Create a new one, copy URL
+3. `echo -n 'NEW-URL' > artifacts/discord-webhook-url`
+4. `ansible-playbook -i inventories/roeden/hosts.yml plays/k3s/services.yml`
+
+Alertmanager picks up the new URL via helm upgrade; no pod restart.
+
+---
+
+## Pod DNS: the search-domain trap (already mitigated)
+
+This bit you in initial setup; documenting so you don't trip again. Your
+nodes' `/etc/resolv.conf` has `search roeden.lab` from DHCP. K3s pods
+normally inherit that search list with `ndots:5`, which means any external
+hostname with fewer than 5 dots (like `discord.com`) gets `.roeden.lab`
+appended and hits the wildcard `*.roeden.lab → 192.168.10.51`. Result:
+every external pod request silently lands at Traefik internal, TLS handshake
+returns Traefik's default cert, calls fail with cert errors.
+
+The fix is already in this repo: `roles/k3s/common_prereqs` writes
+`/etc/k3s-resolv.conf` (host nameservers minus loopbacks + `search` line),
+and `roles/k3s/setup`'s config template tells kubelet to use that file
+via `kubelet-arg: [resolv-conf=/etc/k3s-resolv.conf]`. Pods get a clean
+resolv.conf with no `roeden.lab` search.
+
+If you ever change `k3s_kubelet_fallback_dns` in `group_vars/all.yml`
+(currently the NAS at `192.168.0.29` — which knows `*.roeden.lab` AND
+forwards external lookups; using two upstreams causes ~50% NXDOMAIN
+flapping because CoreDNS's `forward` policy is `random`), apply with:
+
+```bash
+ansible-playbook -i inventories/roeden/hosts.yml plays/k3s/reconfigure.yml
+```
+
+That play re-renders `/etc/k3s-resolv.conf` on every node then rolling-restarts
+k3s with cordon/drain per node. Same pattern as the upgrade play, no
+workload disruption.
+
+---
+
+## Update operations
+
+There are two independent update lifecycles. Run check-updates on both;
+upgrade either when its check shows drift.
 
 ### Check what's behind (weekly read-only)
 
 ```bash
+# kubernetes tier — every chart, k3s itself, Gateway API CRDs, kube-vip
 ansible-playbook -i inventories/roeden/hosts.yml plays/k3s/check-updates.yml
+
+# postgres tier — etcd, Patroni, Postgres (running versions per host + latest released)
+ansible-playbook -i inventories/roeden/hosts.yml plays/postgres/check-updates.yml
 ```
 
-Output: latest released version vs. configured version for every tracked
-component (k3s itself per node, kube-vip, Traefik chart, cert-manager,
-Gateway API CRDs, NFS provisioner, ArgoCD). Each line marked
-`(up to date)` or `(behind, latest X.Y.Z)`.
+Both are read-only — query upstream, report drift, print `(up to date)` or
+`(behind, latest X.Y.Z)`. K3s side covers: k3s per node, kube-vip, Traefik,
+cert-manager, Gateway API CRDs, NFS provisioner, ArgoCD,
+kube-prometheus-stack, Loki, Alloy, Tempo, Uptime Kuma, Authentik. Postgres
+side covers etcd + Patroni + Postgres minor.
 
 ### Apply Kubernetes upgrades (weekly, even if no version bumps)
 
@@ -391,20 +625,12 @@ The upgrade play has two purposes:
 So you run it weekly even when no versions changed — the leaf cert
 renewal phase still does useful work.
 
-**To bump versions**: edit `inventories/roeden/group_vars/all.yml`:
-```yaml
-k3s_version: "v1.36.1+k3s1"
-kubevip_image: "ghcr.io/kube-vip/kube-vip:v1.2.0"
-traefik_chart_version: "v40.2.0"
-cert_manager_chart_version: "v1.19.5"
-gateway_api_version: v1.5.1
-nfs_provisioner_chart_version: "4.0.18"
-argocd_chart_version: "7.7.0"
-```
+**To bump versions**: edit `inventories/roeden/group_vars/all.yml`. Every
+tracked component is a single var here; check-updates tells you which are
+behind. (Use `plays/k3s/check-updates.yml` and `plays/postgres/check-updates.yml`
+first to see what to bump.)
 
-(Use `check-updates.yml` first to see what to bump.)
-
-**Run the upgrade**:
+**Run the k3s upgrade**:
 ```bash
 ansible-playbook -i inventories/roeden/hosts.yml plays/k3s/upgrade.yml
 ```
@@ -418,11 +644,30 @@ Phases, in order:
 6. **Traefik** (both instances) — helm upgrade if behind target
 7. **NFS provisioner** — helm upgrade if behind target
 8. **ArgoCD** — helm upgrade if behind target
-9. **Internal leaf cert** — renew if expiring within 30 days, then push
-   the fresh Secret to both `traefik` and `argocd` namespaces
+9. **kube-prometheus-stack** — helm upgrade if behind target
+10. **Loki** — helm upgrade if behind target
+11. **Tempo** — helm upgrade if behind target
+12. **Alloy** — helm upgrade if behind target
+13. **Uptime Kuma** — helm upgrade if behind target
+14. **Authentik** — helm upgrade if behind target
+15. **Internal leaf cert** — renew if expiring within 30 days, push fresh
+    Secret to `traefik`, `argocd`, `observability`, `authentik` namespaces
 
-Each component's phase fast-skips when the configured version matches
-deployed. Safe to run repeatedly.
+Each phase fast-skips when configured matches deployed. Safe to re-run.
+
+**Run the Postgres upgrade** (only when check shows drift):
+```bash
+ansible-playbook -i inventories/roeden/hosts.yml plays/postgres/upgrade.yml
+```
+
+Phases, all `serial: 1` for HA:
+1. **etcd** — rolling tarball replace on each pg-XX, waits for cluster quorum
+2. **Patroni** — `pip install --upgrade` in venv on each, rolling Patroni restart
+3. **Postgres minor** (e.g. 16.4 → 16.5) — `apt upgrade postgresql-16`, rolling Patroni restart so Postgres is restarted under Patroni's control. Leader fails over to a replica while its node restarts.
+
+Major Postgres upgrades (16 → 17) **aren't** in this play — they need a
+manual dump-restore dance with Proxmox snapshot backstop. Document that
+procedure here when the day comes.
 
 ### k3s version policy
 
@@ -456,17 +701,52 @@ Nothing in this repo needs to change. The app's chart is fully
 self-contained. For an *external* app: same pattern, `parentRefs.name:
 external` and a public hostname under `*.roedev.com`.
 
+### Adding observability to the same app
+
+Free with zero config:
+- **Logs**: write to stdout — Alloy's DaemonSet collects every container log
+  cluster-wide. Filter in Grafana → Explore → Loki by `namespace`, `pod`,
+  `container`, or `app` labels.
+
+Opt in with a tiny chart addition:
+- **Metrics**: app exposes `/metrics` (Prometheus client lib), chart ships a
+  `ServiceMonitor`:
+  ```yaml
+  apiVersion: monitoring.coreos.com/v1
+  kind: ServiceMonitor
+  metadata:
+    name: myapp
+  spec:
+    selector:
+      matchLabels:
+        app: myapp
+    endpoints:
+      - port: http
+        path: /metrics
+  ```
+  Prometheus auto-discovers and scrapes; metrics show up in Grafana → Explore
+  → Prometheus.
+
+Alerts on your app: ship a `PrometheusRule` resource alongside, same pattern.
+Alertmanager routes any firing rule to Discord automatically.
+
 ---
 
 ## Glossary of "what runs where"
 
 - **Controller (your laptop)**: where you run `ansible-playbook`. Reads
-  `artifacts/` directly (cert, kubeconfig, tokens). Does NOT need helm or
-  kubernetes Python lib (those run on cp1).
+  `artifacts/` directly (cert, kubeconfig, tokens, passwords). Does NOT
+  need helm or kubernetes Python lib (those run on cp1).
 - **`k3s-cp1`**: the Ansible target for all `kubernetes.core.helm` and
   `kubernetes.core.k8s` tasks. Has `/etc/rancher/k3s/k3s.yaml`. Files
   needed from the controller are read via Jinja `lookup` and shipped over.
-- **All k3s nodes**: targets for OS update plays + trust-cert push.
+- **`pg-01` and friends**: Postgres VMs (`postgres_servers` group). Run
+  Postgres + Patroni + etcd. Ansible targets them directly for the
+  `plays/postgres/*` plays. Apps in k3s reach them via TCP at
+  192.168.10.41–43:5432 (eventually behind a HAProxy in front when we add
+  it).
+- **All hosts (k3s nodes + postgres VMs)**: targets for the `plays/lab/*`
+  plays — OS updates and internal-CA trust distribution.
 
 ---
 

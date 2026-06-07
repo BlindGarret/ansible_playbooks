@@ -1,0 +1,3 @@
+---
+valkey_kubeconfig: /etc/rancher/k3s/k3s.yaml
+valkey_service_name: valkey

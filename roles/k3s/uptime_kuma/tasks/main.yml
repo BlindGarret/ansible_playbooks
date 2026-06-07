@@ -1,0 +1,48 @@
+---
+- name: Ensure observability namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ uptime_kuma_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ observability_namespace }}"
+
+# Uptime Kuma lives in the observability namespace, so the internal-tls
+# Secret created by kube_prometheus_stack + refreshed by internal_leaf_cert
+# is already there — no additional Secret creation needed.
+
+# The Roeden internal CA cert as a ConfigMap so Uptime Kuma can validate
+# TLS against *.roeden.lab targets. Node.js reads it via NODE_EXTRA_CA_CERTS
+# (a file path), mounted from this ConfigMap.
+- name: Create Roeden internal CA ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ uptime_kuma_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: roeden-ca
+        namespace: "{{ observability_namespace }}"
+      data:
+        ca.crt: "{{ lookup('file', playbook_dir ~ '/' ~ internal_ca_path) }}"
+
+- name: Render Uptime Kuma chart values
+  template:
+    src: values.yaml.j2
+    dest: /tmp/uptime-kuma-values.yaml
+    mode: "0644"
+
+- name: Install/upgrade Uptime Kuma chart
+  kubernetes.core.helm:
+    name: "{{ uptime_kuma_release_name }}"
+    chart_ref: "{{ uptime_kuma_chart_name }}"
+    chart_repo_url: "{{ uptime_kuma_chart_repo }}"
+    chart_version: "{{ uptime_kuma_chart_version }}"
+    namespace: "{{ observability_namespace }}"
+    values_files:
+      - /tmp/uptime-kuma-values.yaml
+    kubeconfig: "{{ uptime_kuma_kubeconfig }}"
+    wait: true

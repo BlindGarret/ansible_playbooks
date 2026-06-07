@@ -94,6 +94,88 @@
         argocd_latest_version: "{{ (argocd_index.content | from_yaml).entries['argo-cd'][0].version }}"
         argocd_current_version: "{{ hostvars[groups['k3s_servers'][0]].argocd_chart_version | regex_replace('^v', '') }}"
 
+    - name: Query kube-prometheus-stack helm repo index
+      uri:
+        url: https://prometheus-community.github.io/helm-charts/index.yaml
+        return_content: true
+      register: kps_index
+
+    - name: Stash latest + configured kube-prometheus-stack versions
+      set_fact:
+        kps_latest_version: "{{ (kps_index.content | from_yaml).entries['kube-prometheus-stack'][0].version }}"
+        kps_current_version: "{{ hostvars[groups['k3s_servers'][0]].kps_chart_version | regex_replace('^v', '') }}"
+
+    - name: Query Grafana helm repo index (Loki + Alloy live here)
+      uri:
+        url: https://grafana.github.io/helm-charts/index.yaml
+        return_content: true
+      register: grafana_index
+
+    - name: Stash latest + configured Loki + Alloy + Tempo versions
+      set_fact:
+        loki_latest_version: "{{ (grafana_index.content | from_yaml).entries['loki'][0].version }}"
+        loki_current_version: "{{ hostvars[groups['k3s_servers'][0]].loki_chart_version | regex_replace('^v', '') }}"
+        alloy_latest_version: "{{ (grafana_index.content | from_yaml).entries['alloy'][0].version }}"
+        alloy_current_version: "{{ hostvars[groups['k3s_servers'][0]].alloy_chart_version | regex_replace('^v', '') }}"
+        tempo_latest_version: "{{ (grafana_index.content | from_yaml).entries['tempo'][0].version }}"
+        tempo_current_version: "{{ hostvars[groups['k3s_servers'][0]].tempo_chart_version | regex_replace('^v', '') }}"
+
+    - name: Query Uptime Kuma helm repo index
+      uri:
+        url: https://dirsigler.github.io/uptime-kuma-helm/index.yaml
+        return_content: true
+      register: uptime_kuma_index
+
+    - name: Stash latest + configured Uptime Kuma versions
+      set_fact:
+        uptime_kuma_latest_version: "{{ (uptime_kuma_index.content | from_yaml).entries['uptime-kuma'][0].version }}"
+        uptime_kuma_current_version: "{{ hostvars[groups['k3s_servers'][0]].uptime_kuma_chart_version | regex_replace('^v', '') }}"
+
+    - name: Query Authentik helm repo index
+      uri:
+        url: https://charts.goauthentik.io/index.yaml
+        return_content: true
+      register: authentik_index
+
+    - name: Stash latest + configured Authentik versions
+      set_fact:
+        authentik_latest_version: "{{ (authentik_index.content | from_yaml).entries['authentik'][0].version }}"
+        authentik_current_version: "{{ hostvars[groups['k3s_servers'][0]].authentik_chart_version | regex_replace('^v', '') }}"
+
+    - name: Query GitHub for latest Valkey release
+      uri:
+        url: https://api.github.com/repos/valkey-io/valkey/releases/latest
+        return_content: true
+        headers:
+          Accept: application/vnd.github+json
+      register: valkey_latest_release
+
+    - name: Stash latest Valkey version + parse configured tag
+      set_fact:
+        valkey_latest_version: "{{ valkey_latest_release.json.tag_name }}"
+        # Strip image prefix + any base-OS suffix (-trixie / -alpine / -bookworm)
+        valkey_current_version: "{{ hostvars[groups['k3s_servers'][0]].valkey_image | regex_replace('^.*:', '') | regex_replace('-(trixie|alpine|bookworm).*$', '') }}"
+
+    - name: Query GitHub for latest HAProxy tags
+      # HAProxy doesn't use GitHub releases — only tags. Most-recent first;
+      # filter -dev to get the newest stable.
+      uri:
+        url: https://api.github.com/repos/haproxy/haproxy/tags?per_page=30
+        return_content: true
+        headers:
+          Accept: application/vnd.github+json
+      register: haproxy_tags_list
+
+    - name: Stash latest HAProxy stable version + parse configured tag
+      set_fact:
+        haproxy_latest_version: >-
+          {{ haproxy_tags_list.json
+             | rejectattr('name', 'search', '-dev')
+             | map(attribute='name')
+             | map('regex_replace', '^v', '')
+             | first }}
+        haproxy_current_version: "{{ hostvars[groups['k3s_servers'][0]].postgres_proxy_image | regex_replace('^.*:', '') | regex_replace('-(alpine|trixie|bookworm).*$', '') }}"
+
 - name: roeden | gather current k3s versions
   hosts: k3s_servers:k3s_agents
   become: true
@@ -143,6 +225,38 @@
       set_fact:
         argocd_line: "{{ '%-12s' | format('argocd') }} {{ '%-16s' | format(argocd_current_version) }} {% if argocd_current_version == argocd_latest_version %}(up to date){% else %}(behind, latest {{ argocd_latest_version }}){% endif %}"
 
+    - name: Build kube-prometheus-stack report line
+      set_fact:
+        kps_line: "{{ '%-12s' | format('kube-prom') }} {{ '%-16s' | format(kps_current_version) }} {% if kps_current_version == kps_latest_version %}(up to date){% else %}(behind, latest {{ kps_latest_version }}){% endif %}"
+
+    - name: Build Loki report line
+      set_fact:
+        loki_line: "{{ '%-12s' | format('loki') }} {{ '%-16s' | format(loki_current_version) }} {% if loki_current_version == loki_latest_version %}(up to date){% else %}(behind, latest {{ loki_latest_version }}){% endif %}"
+
+    - name: Build Alloy report line
+      set_fact:
+        alloy_line: "{{ '%-12s' | format('alloy') }} {{ '%-16s' | format(alloy_current_version) }} {% if alloy_current_version == alloy_latest_version %}(up to date){% else %}(behind, latest {{ alloy_latest_version }}){% endif %}"
+
+    - name: Build Tempo report line
+      set_fact:
+        tempo_line: "{{ '%-12s' | format('tempo') }} {{ '%-16s' | format(tempo_current_version) }} {% if tempo_current_version == tempo_latest_version %}(up to date){% else %}(behind, latest {{ tempo_latest_version }}){% endif %}"
+
+    - name: Build Uptime Kuma report line
+      set_fact:
+        uptime_kuma_line: "{{ '%-12s' | format('uptime-kuma') }} {{ '%-16s' | format(uptime_kuma_current_version) }} {% if uptime_kuma_current_version == uptime_kuma_latest_version %}(up to date){% else %}(behind, latest {{ uptime_kuma_latest_version }}){% endif %}"
+
+    - name: Build Authentik report line
+      set_fact:
+        authentik_line: "{{ '%-12s' | format('authentik') }} {{ '%-16s' | format(authentik_current_version) }} {% if authentik_current_version == authentik_latest_version %}(up to date){% else %}(behind, latest {{ authentik_latest_version }}){% endif %}"
+
+    - name: Build Valkey report line
+      set_fact:
+        valkey_line: "{{ '%-12s' | format('valkey') }} {{ '%-16s' | format(valkey_current_version) }} {% if valkey_current_version == valkey_latest_version %}(up to date){% else %}(behind, latest {{ valkey_latest_version }}){% endif %}"
+
+    - name: Build HAProxy (postgres-proxy) report line
+      set_fact:
+        haproxy_line: "{{ '%-12s' | format('haproxy') }} {{ '%-16s' | format(haproxy_current_version) }} {% if haproxy_current_version == haproxy_latest_version %}(up to date){% else %}(behind, latest {{ haproxy_latest_version }}){% endif %}"
+
     - name: Print version drift report
       debug:
-        msg: "{{ ['Latest k3s release: ' ~ k3s_latest_version, 'Latest kube-vip release: ' ~ kubevip_latest_version, 'Latest Traefik chart release: ' ~ traefik_latest_version, 'Latest cert-manager release: ' ~ cert_manager_latest_version, 'Latest Gateway API release: ' ~ gateway_api_latest_version, 'Latest NFS provisioner chart: ' ~ nfs_provisioner_latest_version, 'Latest ArgoCD chart: ' ~ argocd_latest_version, '', 'k3s running versions:'] + ((groups['k3s_servers'] + groups['k3s_agents']) | map('extract', hostvars, 'k3s_version_line') | list) + ['', 'Cluster components (configured):', kubevip_line, traefik_line, cert_manager_line, gateway_api_line, nfs_provisioner_line, argocd_line] }}"
+        msg: "{{ ['Latest k3s release: ' ~ k3s_latest_version, 'Latest kube-vip release: ' ~ kubevip_latest_version, 'Latest Traefik chart release: ' ~ traefik_latest_version, 'Latest cert-manager release: ' ~ cert_manager_latest_version, 'Latest Gateway API release: ' ~ gateway_api_latest_version, 'Latest NFS provisioner chart: ' ~ nfs_provisioner_latest_version, 'Latest ArgoCD chart: ' ~ argocd_latest_version, 'Latest kube-prometheus-stack chart: ' ~ kps_latest_version, 'Latest Loki chart: ' ~ loki_latest_version, 'Latest Alloy chart: ' ~ alloy_latest_version, 'Latest Tempo chart: ' ~ tempo_latest_version, 'Latest Uptime Kuma chart: ' ~ uptime_kuma_latest_version, 'Latest Authentik chart: ' ~ authentik_latest_version, 'Latest Valkey release: ' ~ valkey_latest_version, 'Latest HAProxy stable: ' ~ haproxy_latest_version, '', 'k3s running versions:'] + ((groups['k3s_servers'] + groups['k3s_agents']) | map('extract', hostvars, 'k3s_version_line') | list) + ['', 'Cluster components (configured):', kubevip_line, traefik_line, cert_manager_line, gateway_api_line, nfs_provisioner_line, argocd_line, kps_line, loki_line, alloy_line, tempo_line, uptime_kuma_line, authentik_line, valkey_line, haproxy_line] }}"

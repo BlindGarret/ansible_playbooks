@@ -80,6 +80,8 @@
   loop:
     - "{{ traefik_namespace }}"
     - "{{ argocd_namespace }}"
+    - "{{ observability_namespace }}"
+    - "{{ authentik_namespace }}"
   loop_control:
     label: "{{ item }}"
 

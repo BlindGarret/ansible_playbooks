@@ -1,0 +1,22 @@
+# Grafana datasource for Loki. The kube-prometheus-stack chart's grafana
+# subchart runs a sidecar that watches for ConfigMaps labeled
+# `grafana_datasource: "1"` and auto-loads them.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-grafana-datasource
+  namespace: {{ observability_namespace }}
+  labels:
+    grafana_datasource: "1"
+data:
+  loki-datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://{{ loki_release_name }}.{{ observability_namespace }}.svc:3100
+        version: 1
+        editable: true
+        jsonData:
+          maxLines: 5000

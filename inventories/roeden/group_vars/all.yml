@@ -15,6 +15,52 @@ k3s_version: "v1.36.1+k3s1"   # example; set to what you want
 k3s_token_path: "../../artifacts/k3s-token"
 k3s_token: "{{ lookup('file', playbook_dir ~ '/' ~ k3s_token_path) | trim }}"
 
+# Postgres HA cluster (3 VMs running Postgres + Patroni + etcd quorum).
+# Each VM has ~4 GiB RAM; tuning sizes assume that.
+postgres_cluster_name: "roeden-pg"
+postgres_major_version: 18
+postgres_etcd_version: "3.6.12"
+postgres_superuser_password_path: "../../artifacts/postgres-superuser-password"
+postgres_replication_password_path: "../../artifacts/postgres-replication-password"
+# Postgres tuning
+postgres_shared_buffers: "1GB"
+postgres_effective_cache_size: "3GB"
+postgres_work_mem: "4MB"
+postgres_maintenance_work_mem: "256MB"
+postgres_max_connections: 200
+
+# Platform-tier constants shared by every Postgres-related role.
+patroni_install_dir: /opt/patroni
+patroni_restapi_port: 8008
+postgres_listen_port: 5432
+
+# Postgres proxy (HAProxy in k3s, fronting the PG cluster's current leader).
+# Apps connect to postgres-rw.postgres.svc:5432 — never to PG VM IPs directly.
+# Check https://github.com/haproxy/haproxy/tags (ignore -dev tags; LTS lines
+# are even minors: 3.0, 3.2, 3.4)
+postgres_proxy_namespace: postgres
+postgres_proxy_replicas: 2
+postgres_proxy_image: "haproxy:3.4.0-alpine"
+
+# Per-app databases provisioned on the cluster. Each app gets its own DB +
+# user; the password lives in artifacts/ and is also what the app's chart
+# uses to connect. Add new entries here as you add apps that need PG.
+postgres_databases:
+  - name: authentik
+    user: authentik
+    password_path: "../../artifacts/authentik-postgres-password"
+  - name: grafana
+    user: grafana
+    password_path: "../../artifacts/grafana-postgres-password"
+
+# DNS upstream used by pods when the node's /etc/resolv.conf only contains
+# loopback nameservers (e.g. systemd-resolved). The NAS handles both internal
+# (*.roeden.lab) and external (forwarded upstream) lookups, so we use it
+# alone — CoreDNS's default `forward` policy is `random`, so adding a second
+# upstream that doesn't know about *.roeden.lab causes ~50% NXDOMAIN flapping.
+k3s_kubelet_fallback_dns:
+  - 192.168.0.29   # NAS — internal DNS, knows *.roeden.lab + forwards external
+
 # Keep kubeconfig locally after install
 k3s_kubeconfig_local_path: "../../artifacts/kubeconfig-{{ k3s_cluster_name }}.yaml"
 
@@ -40,7 +86,7 @@ traefik_internal_ip: 192.168.10.51
 traefik_external_ip: 192.168.10.52
 
 # cert-manager. Check https://github.com/cert-manager/cert-manager/releases
-cert_manager_chart_version: "v1.19.5"
+cert_manager_chart_version: "v1.20.2"
 cert_manager_namespace: cert-manager
 
 # Gateway API CRDs. Check https://github.com/kubernetes-sigs/gateway-api/releases
@@ -56,9 +102,94 @@ nfs_storage_class_name: nfs-client
 nfs_default_storage_class: true
 
 # ArgoCD. Check https://github.com/argoproj/argo-helm/releases (filter for argo-cd-*)
-argocd_chart_version: "7.7.0"
+argocd_chart_version: "9.5.19"
 argocd_namespace: argocd
 argocd_hostname: argocd.roeden.lab
+
+# Observability stack. kube-prometheus-stack bundles Prometheus + Alertmanager
+# + Grafana + node-exporter + kube-state-metrics + ServiceMonitor CRDs.
+# Check https://github.com/prometheus-community/helm-charts/releases (filter for kube-prometheus-stack-*)
+kps_chart_version: "86.2.0"
+observability_namespace: observability
+grafana_hostname: grafana.roeden.lab
+# Local file containing the Discord webhook URL for Alertmanager notifications.
+discord_webhook_path: "../../artifacts/discord-webhook-url"
+
+# Grafana — state (dashboards, users, settings) lives in the external HA
+# Postgres cluster, not in a bundled SQLite PVC. Random password generated
+# on first run; rotate by deleting artifacts/grafana-postgres-password and
+# the matching PG role + re-running services.yml.
+grafana_postgres_password_path: "../../artifacts/grafana-postgres-password"
+
+# Loki — log aggregation, single-binary mode, NFS-backed.
+# Check https://github.com/grafana/helm-charts/releases (filter for loki-*)
+loki_chart_version: "7.0.0"
+loki_retention_days: 14
+loki_storage_size: 50Gi
+
+# Grafana Alloy — log shipper DaemonSet that scrapes container logs from
+# every node and forwards to Loki. Also receives OTLP traces from apps and
+# forwards them to Tempo.
+# Check https://github.com/grafana/helm-charts/releases (filter for alloy-*)
+alloy_chart_version: "1.8.2"
+
+# Grafana Tempo — distributed tracing backend, single-binary mode, NFS-backed.
+# Check https://github.com/grafana/helm-charts/releases (filter for tempo-*)
+tempo_chart_version: "1.24.4"
+tempo_retention_hours: 168    # 7 days
+tempo_storage_size: 20Gi
+
+# Uptime Kuma — external "is the front door open?" probes + Discord notifications.
+# Independent of cluster internals on purpose.
+# Check https://github.com/dirsigler/uptime-kuma-helm/releases
+uptime_kuma_chart_version: "4.1.0"
+uptime_kuma_hostname: uptime.roeden.lab
+
+# Valkey — single-instance Redis-protocol cache, shared across apps.
+# BSD-licensed Redis fork maintained by Linux Foundation (AWS/Google/Oracle).
+# Apps connect to valkey.valkey.svc:6379 — never use a chart's bundled Redis.
+# Cache only: RDB snapshots to NFS, no replication. Restart = users re-login.
+# Check https://github.com/valkey-io/valkey/releases
+valkey_namespace: valkey
+valkey_image: "valkey/valkey:9.1.0-trixie"
+valkey_storage_size: 2Gi
+valkey_password_path: "../../artifacts/valkey-password"
+
+# Authentik — central identity provider. Postgres lives on the external HA
+# cluster (via postgres-rw.postgres.svc); cache lives on Valkey (above).
+# Check https://github.com/goauthentik/helm/releases
+authentik_chart_version: "2026.5.2"
+authentik_namespace: authentik
+authentik_hostname: auth.roeden.lab
+# These two stay constant for the install's lifetime. Generate once with:
+#   openssl rand -base64 60 | tr -d '\n' > artifacts/authentik-secret-key
+#   openssl rand -base64 32 | tr -d '\n' > artifacts/authentik-postgres-password
+# Don't rotate without coordinating Postgres + Authentik together.
+authentik_secret_key_path: "../../artifacts/authentik-secret-key"
+authentik_postgres_password_path: "../../artifacts/authentik-postgres-password"
+
+# Authentik blueprints — declarative config for OIDC providers, apps, groups.
+# Two channels:
+#   1. Platform blueprints: rendered from roles/k3s/authentik/templates/blueprints/
+#      into a ConfigMap, mounted at /blueprints/platform/. Owned by this repo.
+#   2. App blueprints: an NFS PVC mounted at /blueprints/apps/. Custom apps
+#      drop their own *.yaml here (via initContainer/Job) and Authentik
+#      picks them up automatically — no Ansible edits per app.
+authentik_app_blueprints_storage_size: 1Gi
+
+# Grafana SSO — wired via OAuth2/OIDC at Authentik. The client_secret is
+# auto-generated, shared between the Authentik provider (via env var read by
+# the blueprint) and the Grafana pod (via env var read by grafana.ini).
+# Group membership in Authentik decides Grafana role; lroe (your user) needs
+# to be a member of the group named below to get Admin in Grafana.
+grafana_oidc_client_secret_path: "../../artifacts/grafana-oidc-client-secret"
+grafana_admins_group_name: "grafana-admins"
+
+# ArgoCD SSO — same pattern as Grafana. Members of argocd_admins_group_name
+# get the built-in ArgoCD `role:admin`; anyone else is denied (no readonly
+# fallback at homelab scale — easier to grant readonly via membership later).
+argocd_oidc_client_secret_path: "../../artifacts/argocd-oidc-client-secret"
+argocd_admins_group_name: "argocd-admins"
 
 # Internal TLS chain. The CA is the trust anchor (distributed to nodes' and
 # clients' CA stores). The leaf cert is what Traefik actually serves; it's

@@ -1,0 +1,5 @@
+---
+loki_chart_repo: https://grafana.github.io/helm-charts
+loki_chart_name: loki
+loki_release_name: loki
+loki_kubeconfig: /etc/rancher/k3s/k3s.yaml

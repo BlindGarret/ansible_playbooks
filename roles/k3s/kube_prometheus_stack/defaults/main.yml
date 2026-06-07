@@ -1,0 +1,6 @@
+---
+kps_chart_repo: https://prometheus-community.github.io/helm-charts
+kps_chart_name: kube-prometheus-stack
+kps_release_name: kps
+kps_kubeconfig: /etc/rancher/k3s/k3s.yaml
+kps_tls_secret_name: internal-tls

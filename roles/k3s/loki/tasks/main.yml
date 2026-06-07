@@ -1,0 +1,34 @@
+---
+- name: Ensure observability namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ loki_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ observability_namespace }}"
+
+- name: Render Loki chart values
+  template:
+    src: values.yaml.j2
+    dest: /tmp/loki-values.yaml
+    mode: "0644"
+
+- name: Install/upgrade Loki chart
+  kubernetes.core.helm:
+    name: "{{ loki_release_name }}"
+    chart_ref: "{{ loki_chart_name }}"
+    chart_repo_url: "{{ loki_chart_repo }}"
+    chart_version: "{{ loki_chart_version }}"
+    namespace: "{{ observability_namespace }}"
+    values_files:
+      - /tmp/loki-values.yaml
+    kubeconfig: "{{ loki_kubeconfig }}"
+    wait: true
+
+- name: Apply Loki datasource ConfigMap for Grafana
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ loki_kubeconfig }}"
+    definition: "{{ lookup('template', 'grafana-datasource.yaml.j2') | from_yaml }}"

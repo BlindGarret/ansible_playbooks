@@ -62,3 +62,38 @@
     name: systemd-timesyncd
     enabled: true
     state: started
+
+# Pods inherit the node's /etc/resolv.conf search list via kubelet, and our
+# nodes get `search roeden.lab` from DHCP. Combined with ndots:5 and our
+# wildcard *.roeden.lab → 192.168.10.51 DNS entry, every external lookup
+# from a pod gets misdirected to Traefik (e.g. discordapp.com →
+# discordapp.com.roeden.lab → .51). Fix: feed kubelet a stripped resolv.conf
+# with real (non-loopback) upstream nameservers and no search domains.
+#
+# Loopback addresses (127.0.0.0/8, ::1) get filtered because they typically
+# point to systemd-resolved or dnsmasq on the host, which are unreachable
+# from inside the pod network namespace AND cause CoreDNS forward loops.
+- name: Read host /etc/resolv.conf
+  slurp:
+    src: /etc/resolv.conf
+  register: _host_resolv
+
+- name: Extract real (non-loopback) nameservers from host resolv.conf
+  set_fact:
+    _kubelet_nameservers: >-
+      {{ (_host_resolv.content | b64decode).splitlines()
+         | select('match', '^nameserver ')
+         | map('regex_replace', '^nameserver\s+', '')
+         | reject('match', '^(127\.|::1$)')
+         | list }}
+
+- name: Build kubelet resolv.conf
+  copy:
+    dest: /etc/k3s-resolv.conf
+    mode: "0644"
+    content: |
+      # Managed by ansible (roles/k3s/common_prereqs). Pod DNS upstream.
+      # Search domains and loopback resolvers intentionally omitted.
+      {% for ns in (_kubelet_nameservers if _kubelet_nameservers | length > 0 else k3s_kubelet_fallback_dns) %}
+      nameserver {{ ns }}
+      {% endfor %}

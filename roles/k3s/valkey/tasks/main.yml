@@ -1,0 +1,25 @@
+---
+# Single-instance Valkey — Redis-protocol-compatible cache, shared across apps.
+# Used by Authentik (sessions/queue) and any future app that wants Redis.
+# Cache only: RDB snapshots to an NFS-backed PVC, no replication. If the pod
+# restarts, users may need to log back in — acceptable at homelab scale.
+
+- name: Apply valkey resources
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ valkey_kubeconfig }}"
+    definition: "{{ lookup('template', 'resources.yaml.j2') | from_yaml_all | list }}"
+
+- name: Wait for valkey deployment to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ valkey_kubeconfig }}"
+    api_version: apps/v1
+    kind: Deployment
+    name: valkey
+    namespace: "{{ valkey_namespace }}"
+  register: valkey_deploy
+  retries: 30
+  delay: 5
+  until: >
+    valkey_deploy.resources | length > 0
+    and (valkey_deploy.resources[0].status.readyReplicas | default(0)) == 1

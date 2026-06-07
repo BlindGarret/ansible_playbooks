@@ -1,0 +1,59 @@
+# Loki chart values — single-binary mode for homelab simplicity.
+# No object storage, no caches — chunks on NFS, single replica, simple
+# filesystem schema. Throughput is fine for hundreds-of-pods scale; if you
+# ever outgrow this swap to SimpleScalable mode and S3-compatible storage.
+deploymentMode: SingleBinary
+
+loki:
+  auth_enabled: false
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: filesystem
+  schemaConfig:
+    configs:
+      - from: "2024-01-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+  limits_config:
+    retention_period: {{ loki_retention_days }}d
+    reject_old_samples: true
+    reject_old_samples_max_age: 168h
+  compactor:
+    retention_enabled: true
+    delete_request_store: filesystem
+  pattern_ingester:
+    enabled: true
+
+singleBinary:
+  replicas: 1
+  persistence:
+    enabled: true
+    storageClass: nfs-client
+    size: {{ loki_storage_size }}
+
+# Disable unused components from the chart's other deployment modes.
+read:
+  replicas: 0
+write:
+  replicas: 0
+backend:
+  replicas: 0
+
+# We're not exposing Loki externally — no gateway needed.
+gateway:
+  enabled: false
+
+# In-memory caches don't help much at this scale and add complexity.
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+
+# Test pod isn't useful for homelab use.
+test:
+  enabled: false

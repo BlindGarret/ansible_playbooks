@@ -1,0 +1,5 @@
+---
+- import_tasks: prereqs.yml
+- import_tasks: etcd.yml
+- import_tasks: postgres.yml
+- import_tasks: patroni.yml

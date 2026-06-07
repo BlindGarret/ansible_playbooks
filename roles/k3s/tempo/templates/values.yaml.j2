@@ -1,0 +1,23 @@
+# Tempo chart values — single-binary mode, OTLP receivers enabled.
+# Apps send traces to alloy.observability.svc:4318 (HTTP) or :4317 (gRPC),
+# Alloy forwards them here at tempo.observability.svc:4317.
+tempo:
+  retention: {{ tempo_retention_hours }}h
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+  metricsGenerator:
+    enabled: false   # turn on later if you want service-graph metrics in Prom
+
+persistence:
+  enabled: true
+  storageClassName: nfs-client
+  size: {{ tempo_storage_size }}
+
+# Tempo's single-binary needs both APIs exposed in-cluster.
+service:
+  type: ClusterIP

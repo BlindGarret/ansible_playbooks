@@ -1,0 +1,31 @@
+---
+# Stand up the 3-node Postgres HA cluster:
+#   pg-01, pg-02, pg-03 each running etcd + Postgres + Patroni.
+# etcd quorum elects which pg-XX is the leader; Patroni promotes a replica
+# automatically if the leader disappears.
+#
+# Re-runnable. First run bootstraps the cluster; subsequent runs are idempotent
+# (won't reinitdb, won't reset cluster state). To wipe and start fresh, you
+# have to delete the etcd cluster key + the Postgres data dirs explicitly.
+
+# Auto-generate the two persistent passwords on the controller if they're not
+# already in artifacts/. Once generated, they stay forever — don't rotate
+# without coordinating Postgres + Patroni together.
+- name: roeden | bootstrap Postgres secrets if missing
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: ../../roles/local/ensure_random_secrets
+      vars:
+        ensure_random_secrets:
+          - path: "{{ postgres_superuser_password_path }}"
+            description: "Postgres superuser password"
+          - path: "{{ postgres_replication_password_path }}"
+            description: "Postgres replication user password"
+
+- name: roeden | Postgres HA cluster (Patroni + etcd)
+  hosts: postgres_servers
+  become: true
+  gather_facts: true
+  roles:
+    - role: ../../roles/postgres/setup

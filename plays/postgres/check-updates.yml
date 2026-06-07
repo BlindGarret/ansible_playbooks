@@ -1,0 +1,79 @@
+---
+# Drift report for the Postgres tier. Compares configured versions against
+# what's released upstream. Read-only; does not change anything.
+
+- name: roeden | fetch latest Postgres-tier versions
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Query GitHub for latest etcd release
+      uri:
+        url: https://api.github.com/repos/etcd-io/etcd/releases/latest
+        return_content: true
+        headers:
+          Accept: application/vnd.github+json
+      register: etcd_latest_release
+
+    - name: Stash latest etcd version
+      set_fact:
+        etcd_latest_version: "{{ etcd_latest_release.json.tag_name | regex_replace('^v', '') }}"
+        etcd_current_version: "{{ hostvars[groups['postgres_servers'][0]].postgres_etcd_version }}"
+
+    - name: Query PyPI for latest Patroni release
+      uri:
+        url: https://pypi.org/pypi/patroni/json
+        return_content: true
+      register: patroni_pypi
+
+    - name: Stash latest Patroni version
+      set_fact:
+        patroni_latest_version: "{{ patroni_pypi.json.info.version }}"
+
+# Patroni's installed version is in the venv on each pg-XX host — gather
+# what's actually running there alongside what's configured.
+- name: roeden | gather Postgres-tier running versions
+  hosts: postgres_servers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read installed etcd version
+      shell: /usr/local/bin/etcd --version | head -1 | awk '{print $NF}'
+      register: etcd_running_raw
+      changed_when: false
+      failed_when: false
+
+    - name: Read installed Patroni version
+      shell: "{{ patroni_install_dir }}/bin/patroni --version | awk '{print $NF}'"
+      register: patroni_running_raw
+      changed_when: false
+      failed_when: false
+
+    - name: Read installed Postgres version
+      shell: "/usr/lib/postgresql/{{ postgres_major_version }}/bin/postgres --version | awk '{print $NF}'"
+      register: postgres_running_raw
+      changed_when: false
+      failed_when: false
+
+    - name: Build per-host postgres line
+      set_fact:
+        pg_node_line: >-
+          {{ '%-10s' | format(inventory_hostname) }}
+          etcd={{ etcd_running_raw.stdout | default('?') }}
+          patroni={{ patroni_running_raw.stdout | default('?') }}
+          postgres={{ postgres_running_raw.stdout | default('?') }}
+
+- name: roeden | postgres tier version report
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Build etcd report line
+      set_fact:
+        pg_etcd_line: "{{ '%-12s' | format('etcd') }} {{ '%-16s' | format(etcd_current_version) }} {% if etcd_current_version == etcd_latest_version %}(up to date){% else %}(behind, latest {{ etcd_latest_version }}){% endif %}"
+
+    - name: Build patroni report line (latest from PyPI, no configured pin yet — installed-only)
+      set_fact:
+        pg_patroni_line: "{{ '%-12s' | format('patroni') }} {{ '%-16s' | format('(see hosts)') }} latest released: {{ patroni_latest_version }}"
+
+    - name: Print Postgres-tier version drift report
+      debug:
+        msg: "{{ ['Latest etcd release: ' ~ etcd_latest_version, 'Latest Patroni release: ' ~ patroni_latest_version, '', 'Postgres tier running versions:'] + (groups['postgres_servers'] | map('extract', hostvars, 'pg_node_line') | list) + ['', 'Configured (group_vars):', pg_etcd_line, pg_patroni_line] }}"

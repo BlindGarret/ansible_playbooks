@@ -1,0 +1,133 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ valkey_namespace }}
+---
+# Auth credential. Mounted as an env var into the Valkey pod and consumed via
+# --requirepass; the same password lives in artifacts/ and apps' values files
+# read it from there to connect.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: valkey-auth
+  namespace: {{ valkey_namespace }}
+type: Opaque
+stringData:
+  password: "{{ lookup('file', playbook_dir ~ '/' ~ valkey_password_path) | trim }}"
+---
+# Server config — cache-tuned. allkeys-lru means Valkey evicts cold keys
+# rather than refusing writes when maxmemory is hit, which is the right
+# behavior for an Authentik-style session cache. Snapshots every 5 min
+# (>=100 changes) or every 1 min (>=10k changes); no AOF.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: valkey-config
+  namespace: {{ valkey_namespace }}
+data:
+  valkey.conf: |
+    bind 0.0.0.0
+    port 6379
+    protected-mode no
+    maxmemory 256mb
+    maxmemory-policy allkeys-lru
+    appendonly no
+    save 300 100
+    save 60 10000
+    dir /data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: valkey-data
+  namespace: {{ valkey_namespace }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: {{ nfs_storage_class_name }}
+  resources:
+    requests:
+      storage: {{ valkey_storage_size }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valkey
+  namespace: {{ valkey_namespace }}
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate — RWO PVC can only attach to one pod at a time.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: valkey
+  template:
+    metadata:
+      labels:
+        app: valkey
+    spec:
+      containers:
+        - name: valkey
+          image: {{ valkey_image }}
+          command: ["valkey-server"]
+          args:
+            - /etc/valkey/valkey.conf
+            - --requirepass
+            - $(VALKEY_PASSWORD)
+          env:
+            - name: VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: valkey-auth
+                  key: password
+          ports:
+            - name: valkey
+              containerPort: 6379
+          # tcpSocket probes: --requirepass means even PING needs auth, so a
+          # protocol-level probe would need credentials. Port-listen is enough
+          # for liveness/readiness at this scale.
+          livenessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: 6379
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 384Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/valkey
+              readOnly: true
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: config
+          configMap:
+            name: valkey-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: valkey-data
+---
+# Endpoint apps connect to: valkey.valkey.svc:6379
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ valkey_service_name }}
+  namespace: {{ valkey_namespace }}
+spec:
+  type: ClusterIP
+  selector:
+    app: valkey
+  ports:
+    - name: valkey
+      port: 6379
+      targetPort: 6379

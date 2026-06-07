@@ -1,0 +1,92 @@
+# Grafana Alloy chart values — DaemonSet handling both log collection
+# (kubelet → Loki) and OTLP trace receiving (apps → Tempo).
+alloy:
+  configMap:
+    create: true
+    content: |
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+      // ---- LOGS: discover every pod on the local node ----
+      discovery.kubernetes "pods" {
+        role = "pod"
+        selectors {
+          role  = "pod"
+          field = "spec.nodeName=" + sys.env("HOSTNAME")
+        }
+      }
+
+      discovery.relabel "pods" {
+        targets = discovery.kubernetes.pods.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+          target_label  = "app"
+        }
+      }
+
+      loki.source.kubernetes "pods" {
+        targets    = discovery.relabel.pods.output
+        forward_to = [loki.write.local.receiver]
+      }
+
+      loki.write "local" {
+        endpoint {
+          url = "http://{{ loki_release_name }}.{{ observability_namespace }}.svc:3100/loki/api/v1/push"
+        }
+      }
+
+      // ---- TRACES: receive OTLP from apps, forward to Tempo ----
+      otelcol.receiver.otlp "default" {
+        grpc {
+          endpoint = "0.0.0.0:4317"
+        }
+        http {
+          endpoint = "0.0.0.0:4318"
+        }
+        output {
+          traces = [otelcol.exporter.otlp.tempo.input]
+        }
+      }
+
+      otelcol.exporter.otlp "tempo" {
+        client {
+          endpoint = "{{ tempo_release_name }}.{{ observability_namespace }}.svc:4317"
+          tls {
+            insecure = true
+          }
+        }
+      }
+
+  # Expose OTLP ports on the Alloy Service so apps can target
+  # alloy.observability.svc:4318 (HTTP) or :4317 (gRPC).
+  extraPorts:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+
+# DaemonSet so we get one Alloy pod per node, reading that node's pod logs.
+controller:
+  type: daemonset
+
+# Mount /var/log so Alloy can read kubelet's pod-log files.
+alloy_mounts_varlog: true

@@ -1,0 +1,90 @@
+---
+# Patroni lives in a dedicated venv under /opt/patroni. Keeps pip-installed
+# deps out of system site-packages and survives Ubuntu's PEP-668 restriction.
+
+- name: Create Patroni venv at {{ patroni_install_dir }}
+  command: "python3 -m venv {{ patroni_install_dir }}"
+  args:
+    creates: "{{ patroni_install_dir }}/bin/python3"
+
+- name: Upgrade pip + setuptools inside venv
+  pip:
+    name:
+      - pip
+      - setuptools
+      - wheel
+    state: latest
+    virtualenv: "{{ patroni_install_dir }}"
+
+- name: Install Patroni + etcd3 driver + psycopg2
+  pip:
+    name:
+      - "patroni[{{ patroni_pip_extras }}]"
+      - psycopg2-binary
+    state: present
+    virtualenv: "{{ patroni_install_dir }}"
+
+- name: Ensure /etc/patroni directory
+  file:
+    path: /etc/patroni
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0755"
+
+- name: Render Patroni config
+  template:
+    src: patroni.yml.j2
+    dest: /etc/patroni/patroni.yml
+    owner: postgres
+    group: postgres
+    mode: "0600"   # contains passwords
+  notify: restart patroni
+
+- name: Render Patroni systemd unit
+  template:
+    src: patroni.service.j2
+    dest: /etc/systemd/system/patroni.service
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart patroni
+
+- name: Flush handlers (start patroni)
+  meta: flush_handlers
+
+- name: Enable and start Patroni
+  systemd:
+    name: patroni
+    enabled: true
+    state: started
+
+- name: Wait for Patroni REST API to respond
+  wait_for:
+    host: "{{ ansible_host }}"
+    port: "{{ patroni_restapi_port }}"
+    timeout: 120
+
+- name: Wait for a Patroni leader to be elected (cluster shows one)
+  shell: |
+    {{ patroni_install_dir }}/bin/patronictl -c /etc/patroni/patroni.yml list -f json \
+      | python3 -c 'import sys, json; print(sum(1 for r in json.load(sys.stdin) if r.get("Role") == "Leader"))'
+  register: leader_count
+  retries: 30
+  delay: 5
+  until: leader_count.stdout | int == 1
+  changed_when: false
+  run_once: true
+  delegate_to: "{{ groups['postgres_servers'][0] }}"
+
+- name: Show cluster state
+  command: "{{ patroni_install_dir }}/bin/patronictl -c /etc/patroni/patroni.yml list"
+  register: patroni_status
+  changed_when: false
+  run_once: true
+  delegate_to: "{{ groups['postgres_servers'][0] }}"
+
+- name: Patroni cluster status
+  debug:
+    msg: "{{ patroni_status.stdout_lines }}"
+  run_once: true

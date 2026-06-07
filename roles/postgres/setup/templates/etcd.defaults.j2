@@ -1,0 +1,13 @@
+# etcd environment file — managed by ansible
+ETCD_NAME={{ inventory_hostname }}
+ETCD_DATA_DIR=/var/lib/etcd/{{ inventory_hostname }}.etcd
+ETCD_LISTEN_PEER_URLS=http://0.0.0.0:{{ etcd_peer_port }}
+ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:{{ etcd_client_port }}
+ETCD_ADVERTISE_CLIENT_URLS=http://{{ ansible_host }}:{{ etcd_client_port }}
+ETCD_INITIAL_ADVERTISE_PEER_URLS=http://{{ ansible_host }}:{{ etcd_peer_port }}
+ETCD_INITIAL_CLUSTER={% for h in groups['postgres_servers'] %}{{ h }}=http://{{ hostvars[h].ansible_host }}:{{ etcd_peer_port }}{% if not loop.last %},{% endif %}{% endfor %}
+
+ETCD_INITIAL_CLUSTER_TOKEN={{ postgres_cluster_name }}-etcd
+# 'new' only matters on first bootstrap; etcd ignores this once data exists.
+ETCD_INITIAL_CLUSTER_STATE=new
+ETCD_ENABLE_V2=false

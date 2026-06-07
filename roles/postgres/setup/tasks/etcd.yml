@@ -1,0 +1,92 @@
+---
+# etcd is installed from upstream tarball — Ubuntu 22.04's apt package is
+# 3.3.25 which is old and Patroni works better with 3.5.x.
+
+- name: Ensure etcd group exists
+  group:
+    name: etcd
+    system: true
+
+- name: Ensure etcd user exists
+  user:
+    name: etcd
+    group: etcd
+    system: true
+    home: /var/lib/etcd
+    shell: /usr/sbin/nologin
+
+- name: Ensure etcd data directory
+  file:
+    path: "/var/lib/etcd/{{ inventory_hostname }}.etcd"
+    state: directory
+    owner: etcd
+    group: etcd
+    mode: "0700"
+
+- name: Download etcd v{{ postgres_etcd_version }} tarball
+  get_url:
+    url: "https://github.com/etcd-io/etcd/releases/download/v{{ postgres_etcd_version }}/etcd-v{{ postgres_etcd_version }}-linux-amd64.tar.gz"
+    dest: "/tmp/etcd-v{{ postgres_etcd_version }}.tar.gz"
+    mode: "0644"
+  register: etcd_download
+
+- name: Extract etcd binaries to /tmp
+  unarchive:
+    src: "/tmp/etcd-v{{ postgres_etcd_version }}.tar.gz"
+    dest: /tmp
+    remote_src: true
+    creates: "/tmp/etcd-v{{ postgres_etcd_version }}-linux-amd64/etcd"
+
+- name: Install etcd binaries to /usr/local/bin
+  copy:
+    src: "/tmp/etcd-v{{ postgres_etcd_version }}-linux-amd64/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    mode: "0755"
+    remote_src: true
+  loop:
+    - etcd
+    - etcdctl
+    - etcdutl
+
+- name: Render /etc/default/etcd
+  template:
+    src: etcd.defaults.j2
+    dest: /etc/default/etcd
+    mode: "0644"
+  notify: restart etcd
+
+- name: Render etcd systemd unit
+  template:
+    src: etcd.service.j2
+    dest: /etc/systemd/system/etcd.service
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart etcd
+
+- name: Flush handlers (so etcd is up before we wait on it)
+  meta: flush_handlers
+
+- name: Enable and start etcd
+  systemd:
+    name: etcd
+    enabled: true
+    state: started
+
+- name: Wait for local etcd endpoint to be healthy
+  shell: |
+    /usr/local/bin/etcdctl --endpoints=http://127.0.0.1:{{ etcd_client_port }} endpoint health
+  register: etcd_health
+  retries: 30
+  delay: 5
+  until: etcd_health.rc == 0
+  changed_when: false
+
+- name: Verify etcd cluster has 3 members
+  shell: |
+    /usr/local/bin/etcdctl --endpoints=http://127.0.0.1:{{ etcd_client_port }} member list | wc -l
+  register: etcd_member_count
+  changed_when: false
+  failed_when: etcd_member_count.stdout | int < 3
+  run_once: true
+  delegate_to: "{{ groups['postgres_servers'][0] }}"
