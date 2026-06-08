@@ -48,6 +48,7 @@ authentik:
 {% set blueprints_hash = ((
      lookup('template', 'blueprints/grafana-oidc.yaml.j2')
      ~ lookup('template', 'blueprints/argocd-oidc.yaml.j2')
+     ~ lookup('template', 'blueprints/openbao-oidc.yaml.j2')
    ) | hash('sha256'))[:12] %}
 
 global:
@@ -73,6 +74,10 @@ global:
       mountPath: /blueprints/platform/argocd-oidc.yaml
       subPath: argocd-oidc.yaml
       readOnly: true
+    - name: platform-blueprints
+      mountPath: /blueprints/platform/openbao-oidc.yaml
+      subPath: openbao-oidc.yaml
+      readOnly: true
     - name: apps-blueprints
       mountPath: /blueprints/apps
   env:
@@ -87,6 +92,11 @@ global:
       valueFrom:
         secretKeyRef:
           name: argocd-oidc-secret
+          key: client-secret
+    - name: OPENBAO_OIDC_CLIENT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: openbao-oidc-secret
           key: client-secret
 
 server:

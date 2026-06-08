@@ -1,0 +1,13 @@
+---
+openbao_chart_repo: https://openbao.github.io/openbao-helm
+openbao_chart_name: openbao
+openbao_release_name: openbao
+openbao_namespace: openbao
+openbao_kubeconfig: /etc/rancher/k3s/k3s.yaml
+openbao_tls_secret_name: internal-tls
+openbao_ingress_class: traefik-internal
+
+# OpenBao runs as a StatefulSet — pods are addressed by ordinal name
+# (openbao-0 .. openbao-N-1) in the init/unseal logic. Keep in sync with
+# server.ha.replicas in templates/values.yaml.j2.
+openbao_pod_count: 3

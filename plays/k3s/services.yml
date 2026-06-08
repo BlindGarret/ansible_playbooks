@@ -5,7 +5,6 @@
 #   - kube-prometheus-stack (Prometheus + Alertmanager → Discord + Grafana)
 #   - Loki + Grafana Alloy (log aggregation, auto-collected from every pod)
 #   - Tempo (distributed tracing — Alloy also receives OTLP and forwards here)
-#   - Uptime Kuma (external uptime probes + Discord notifications)
 #   - postgres-proxy (HAProxy in postgres ns, fronts external PG cluster)
 #   - Authentik (SSO, uses external PG via the proxy)
 #
@@ -42,6 +41,10 @@
             description: "Grafana OIDC client secret (shared between Authentik + Grafana)"
           - path: "{{ argocd_oidc_client_secret_path }}"
             description: "ArgoCD OIDC client secret (shared between Authentik + ArgoCD)"
+          - path: "{{ openbao_vault_admin_postgres_password_path }}"
+            description: "OpenBao vault_admin Postgres password — backs the database secrets engine"
+          - path: "{{ openbao_oidc_client_secret_path }}"
+            description: "OpenBao OIDC client secret (shared between Authentik + OpenBao)"
 
 # Guard for the user-provided Discord webhook URL (used by Alertmanager).
 - name: roeden | require user-provided services secrets
@@ -82,7 +85,6 @@
     - role: ../../roles/k3s/loki
     - role: ../../roles/k3s/tempo
     - role: ../../roles/k3s/alloy
-    - role: ../../roles/k3s/uptime_kuma
     # postgres_proxy (HAProxy) must be up before authentik, since authentik
     # connects to postgres-rw.postgres.svc:5432 the moment its pod starts.
     - role: ../../roles/k3s/postgres_proxy
@@ -90,3 +92,6 @@
     # valkey.valkey.svc:6379 the moment its pod starts, so it goes first.
     - role: ../../roles/k3s/valkey
     - role: ../../roles/k3s/authentik
+    # OpenBao reaches postgres-rw via the proxy for its database secrets
+    # engine and reaches Authentik for OIDC discovery — both must be up first.
+    - role: ../../roles/k3s/openbao

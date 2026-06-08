@@ -1,0 +1,151 @@
+---
+- name: Ensure openbao namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ openbao_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ openbao_namespace }}"
+
+# Ingress TLS Secret — same pattern as ArgoCD / Grafana.
+- name: Create internal-tls Secret in openbao namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ openbao_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: kubernetes.io/tls
+      metadata:
+        name: "{{ openbao_tls_secret_name }}"
+        namespace: "{{ openbao_namespace }}"
+      data:
+        tls.crt: "{{ lookup('file', playbook_dir ~ '/' ~ internal_cert_path) | b64encode }}"
+        tls.key: "{{ lookup('file', playbook_dir ~ '/' ~ internal_cert_key_path) | b64encode }}"
+
+# CA ConfigMap mounted into OpenBao so its outbound HTTP clients trust
+# *.roeden.lab certs (used by the OIDC auth method to reach Authentik).
+- name: Create internal-ca ConfigMap in openbao namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ openbao_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: internal-ca
+        namespace: "{{ openbao_namespace }}"
+      data:
+        ca.crt: "{{ lookup('file', playbook_dir ~ '/' ~ internal_ca_path) }}"
+
+# Postgres connection Secret — read by the database secrets engine config
+# step in configure.yml. Created up-front so it's idempotent on re-runs.
+- name: Create vault_admin Postgres credential Secret
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ openbao_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: Opaque
+      metadata:
+        name: openbao-pg-vault-admin
+        namespace: "{{ openbao_namespace }}"
+      stringData:
+        password: "{{ lookup('file', playbook_dir ~ '/' ~ openbao_vault_admin_postgres_password_path) | trim }}"
+
+# OIDC client secret — mirrored in the authentik ns via the authentik role
+# (Wave 2). Same value in both namespaces. !Env in the Authentik blueprint
+# pulls it on the provider side; configure.yml uses it on the OpenBao side.
+- name: Create OpenBao OIDC client_secret Secret
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ openbao_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: Opaque
+      metadata:
+        name: openbao-oidc-secret
+        namespace: "{{ openbao_namespace }}"
+      stringData:
+        client-secret: "{{ lookup('file', playbook_dir ~ '/' ~ openbao_oidc_client_secret_path) | trim }}"
+
+- name: Render OpenBao chart values
+  template:
+    src: values.yaml.j2
+    dest: /tmp/openbao-values.yaml
+    mode: "0644"
+
+# wait: false — sealed pods never reach Ready, so `helm install --wait` would
+# hang on the first install. We poll for Running ourselves below.
+- name: Install/upgrade OpenBao chart
+  kubernetes.core.helm:
+    name: "{{ openbao_release_name }}"
+    chart_ref: "{{ openbao_chart_name }}"
+    chart_repo_url: "{{ openbao_chart_repo }}"
+    chart_version: "{{ openbao_chart_version }}"
+    namespace: "{{ openbao_namespace }}"
+    values_files:
+      - /tmp/openbao-values.yaml
+    kubeconfig: "{{ openbao_kubeconfig }}"
+    wait: false
+
+# Pods come up in parallel (server.statefulSet.podManagementPolicy=Parallel
+# in values.yaml.j2 — required because sealed pods never reach Ready, so
+# the default OrderedReady policy would stall after openbao-0). Each pod
+# lands in Running quickly even while sealed; we wait for that and then
+# init+unseal makes them Ready. `kubectl wait` errors on a pod that doesn't
+# exist yet, so the until-loop with `get -o jsonpath` is the robust shape.
+- name: Wait for OpenBao pods to reach Running (sealed-but-alive is fine)
+  command: >
+    kubectl --kubeconfig {{ openbao_kubeconfig }}
+    -n {{ openbao_namespace }}
+    get pod {{ item }}
+    -o jsonpath={.status.phase}
+  register: openbao_pod_phase
+  until: openbao_pod_phase.rc == 0 and openbao_pod_phase.stdout == 'Running'
+  retries: 60
+  delay: 5
+  changed_when: false
+  loop: "{{ range(0, openbao_pod_count) | map('regex_replace', '^(.*)$', 'openbao-\\1') | list }}"
+
+# First-run init: detect by presence of artifacts/openbao-init.json. The
+# init call against a freshly-installed cluster returns the 5 unseal keys
+# and the root token in JSON; we persist the whole blob so unseal.yml and
+# configure.yml can read it back.
+- name: Check for existing OpenBao init keys on controller
+  stat:
+    path: "{{ playbook_dir }}/{{ openbao_init_keys_path }}"
+  register: openbao_keys_stat
+  delegate_to: localhost
+  become: false   # localhost has no passwordless sudo; stat doesn't need it
+  run_once: true
+
+- name: Initialize OpenBao cluster (FIRST RUN ONLY)
+  command: >
+    kubectl --kubeconfig {{ openbao_kubeconfig }}
+    -n {{ openbao_namespace }}
+    exec openbao-0 --
+    bao operator init -format=json -key-shares=5 -key-threshold=3
+  register: openbao_init_result
+  when: not openbao_keys_stat.stat.exists
+  no_log: true
+
+- name: Save init output to artifacts/openbao-init.json
+  copy:
+    content: "{{ openbao_init_result.stdout }}"
+    dest: "{{ playbook_dir }}/{{ openbao_init_keys_path }}"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when: not openbao_keys_stat.stat.exists
+  no_log: true
+
+- name: Unseal sealed OpenBao pods
+  include_tasks: unseal.yml
+
+- name: Configure OpenBao auth methods + database engine
+  include_tasks: configure.yml

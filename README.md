@@ -10,7 +10,7 @@ lifecycle:
 - **k3s cluster** (3 cps + 4 agents) — kubernetes platform. Runs Traefik
   ingress, cert-manager, NFS storage class, ArgoCD, kube-prometheus-stack
   (Prom + Alertmanager + Grafana), Loki + Alloy (logs), Tempo (traces),
-  Uptime Kuma, Authentik (SSO).
+  Authentik (SSO), OpenBao (secrets / dynamic Postgres creds).
 - **Lab tier** — every host across both above. Shared OS-level concerns:
   apt updates with rolling reboots, internal CA trust distribution.
 
@@ -35,7 +35,8 @@ plays/
   k3s/
     bootstrap.yml          # one-time: stand up the k3s cluster from scratch
     ingress.yml            # idempotent: Traefik + cert-manager + Gateways
-    services.yml           # idempotent: NFS + ArgoCD + KPS + Loki + Alloy + Tempo + Kuma + Authentik
+    services.yml           # idempotent: NFS + ArgoCD + KPS + Loki + Alloy + Tempo + Authentik + OpenBao
+    unseal-openbao.yml     # standalone: re-unseal OpenBao pods after restart/eviction
     reconfigure.yml        # rolling restart for k3s node-level config changes
     check-updates.yml      # READ-ONLY: drift report for every tracked component
     upgrade.yml            # weekly: rolling k3s/component upgrades + cert renewal
@@ -110,8 +111,16 @@ forget.
 | `valkey-password` | Shared Valkey cache password | `plays/k3s/services.yml` |
 | `grafana-oidc-client-secret` | Grafana OIDC client_secret (shared with Authentik) | `plays/k3s/services.yml` |
 | `argocd-oidc-client-secret` | ArgoCD OIDC client_secret (shared with Authentik) | `plays/k3s/services.yml` |
+| `openbao-oidc-client-secret` | OpenBao OIDC client_secret (shared with Authentik) | `plays/k3s/services.yml` |
+| `openbao-vault-admin-postgres-password` | Password for the `vault_admin` Postgres role that OpenBao's database engine uses | `plays/k3s/services.yml` |
 | `postgres-superuser-password` | Postgres cluster admin password | `plays/postgres/bootstrap.yml` |
 | `postgres-replication-password` | Patroni's replication user password | `plays/postgres/bootstrap.yml` |
+
+**Special — OpenBao init keys (`openbao-init.json`).** Generated on the very
+first run of the OpenBao role; **NOT regenerable.** Contains the 5 Shamir
+unseal keys and the root token. If this file is deleted with no backup,
+the OpenBao cluster CANNOT be unsealed and all secrets stored in it are
+permanently lost. Treat it like the CA private key: back it up out of band.
 
 **3. Outputs from play runs (just show up; harmless).**
 
@@ -312,8 +321,12 @@ Everything that lands in this run:
 5. **Tempo** — distributed tracing on NFS, 7d retention
 6. **Grafana Alloy** — DaemonSet: collects every pod's stdout to Loki AND
    receives OTLP traces from apps (forwards to Tempo)
-7. **Uptime Kuma** — Ingress at `uptime.roeden.lab`, external uptime probes
-8. **Authentik** — Ingress at `auth.roeden.lab`, SSO identity provider
+7. **Authentik** — Ingress at `auth.roeden.lab`, SSO identity provider
+8. **OpenBao** — Ingress at `vault.roeden.lab`, secrets management. 3-pod
+   raft cluster on NFS PVCs. First run auto-initializes and saves Shamir
+   keys to `artifacts/openbao-init.json`, then unseals all pods. Subsequent
+   runs are idempotent (init skipped if keys file present, unseal skipped
+   if pods already unsealed).
 
 Verify:
 ```bash
@@ -489,6 +502,89 @@ SSO breaks, you can re-enable admin and log in with that password.
 
 ---
 
+## OpenBao — secrets, dynamic Postgres creds, unseal ops
+
+OpenBao (Apache-2.0 fork of Vault) is the platform's secrets manager.
+Apps use it via:
+- The **database secrets engine** for short-lived per-app Postgres
+  credentials. Apps register their own DB role at deploy time and request
+  fresh creds on startup — no static passwords in app config.
+- The **Kubernetes auth method**: apps authenticate via their
+  ServiceAccount token; no static OpenBao credentials in app config either.
+- The **OIDC auth method** (humans): log into the UI at
+  `https://vault.roeden.lab/` via Authentik. Members of the
+  `openbao-admins` Authentik group get the built-in `admin` policy.
+
+3-pod raft cluster on NFS-backed PVCs. The Ansible role's `tasks/main.yml`
+handles install, conditional init, unseal, and configure — all idempotent.
+
+### First-run init: what happens, what to back up
+
+The first time `plays/k3s/services.yml` runs the openbao role, openbao-0
+hits `bao operator init`, gets back JSON with 5 unseal keys + the root
+token, and we save the whole blob to `artifacts/openbao-init.json` on the
+controller (mode 0600).
+
+That file is **the one and only way to unseal the cluster** after a pod
+restart. Subsequent role runs detect it (`stat`) and skip the init step —
+they just read it back for unseal.
+
+If you lose `artifacts/openbao-init.json` AND all pods are sealed, the
+cluster is unrecoverable. Back this file up out-of-band, same as you
+back up `artifacts/roeden-ca.key`.
+
+### Unseal play (catastrophic restart)
+
+When something restarts an OpenBao pod outside an upgrade window — node
+power-cycle, eviction, manual `kubectl delete pod` — that pod comes back
+sealed. Sealed pods serve no API requests until unsealed.
+
+To re-unseal without re-running the full services playbook:
+
+```bash
+ansible-playbook -i inventories/roeden/hosts.yml plays/k3s/unseal-openbao.yml
+```
+
+Reads `artifacts/openbao-init.json`, checks each pod's seal status, submits
+the first 3 unseal keys to any sealed pod. Idempotent — already-unsealed
+pods are no-ops. Takes <30 seconds.
+
+`plays/k3s/upgrade.yml` also sweeps for sealed pods every run, so weekly
+upgrade runs catch this automatically. The standalone play exists for
+the cases where you don't want a full upgrade.
+
+### Lost the init keys file
+
+If `artifacts/openbao-init.json` is gone AND some (or all) pods are
+sealed, those pods stay sealed forever. **There is no other recovery
+path** — Shamir keys are not derivable from anything else. Any secret
+material stored only in OpenBao is lost.
+
+Reset path: delete the OpenBao PVCs, `helm uninstall openbao`, re-run the
+role. Fresh cluster, no historical secrets, no continuity.
+
+### Adding a new app that wants dynamic Postgres creds
+
+The platform-side groundwork is done (database engine configured against
+`postgres-rw.postgres.svc:5432` via the `vault_admin` PG role). For an
+app to opt in:
+
+1. App's Postgres database exists. For now, append to `postgres_databases`
+   in `group_vars/all.yml` and re-run `services.yml`; longer-term we'll
+   move this to an app-side init container so app additions don't
+   require Ansible changes (TBD with the helm chart work).
+2. App's deploy registers a Vault DB role:
+   `bao write database/roles/<app> ...` with the creation SQL template.
+3. App's deploy creates an OpenBao role bound to the app's ServiceAccount:
+   `bao write auth/kubernetes/role/<app> ...`
+4. App reads dynamic creds at startup:
+   `bao read database/creds/<app>` → short-lived username/password.
+
+This whole flow becomes a helm chart helper template once the chart work
+lands.
+
+---
+
 ## Grafana — sidecar password gotcha (rare but important)
 
 Login itself is SSO via Authentik — see the SSO section above. The
@@ -613,7 +709,7 @@ ansible-playbook -i inventories/roeden/hosts.yml plays/postgres/check-updates.ym
 Both are read-only — query upstream, report drift, print `(up to date)` or
 `(behind, latest X.Y.Z)`. K3s side covers: k3s per node, kube-vip, Traefik,
 cert-manager, Gateway API CRDs, NFS provisioner, ArgoCD,
-kube-prometheus-stack, Loki, Alloy, Tempo, Uptime Kuma, Authentik. Postgres
+kube-prometheus-stack, Loki, Alloy, Tempo, Authentik, OpenBao. Postgres
 side covers etcd + Patroni + Postgres minor.
 
 ### Apply Kubernetes upgrades (weekly, even if no version bumps)
@@ -648,10 +744,13 @@ Phases, in order:
 10. **Loki** — helm upgrade if behind target
 11. **Tempo** — helm upgrade if behind target
 12. **Alloy** — helm upgrade if behind target
-13. **Uptime Kuma** — helm upgrade if behind target
-14. **Authentik** — helm upgrade if behind target
+13. **Authentik** — helm upgrade if behind target
+14. **OpenBao** — helm upgrade if behind target. Whether or not the chart
+    moves, this phase also sweeps for sealed pods and unseals them
+    (covers pod rescheduling between upgrade windows). Idempotent.
 15. **Internal leaf cert** — renew if expiring within 30 days, push fresh
-    Secret to `traefik`, `argocd`, `observability`, `authentik` namespaces
+    Secret to `traefik`, `argocd`, `observability`, `authentik`, `openbao`
+    namespaces
 
 Each phase fast-skips when configured matches deployed. Safe to re-run.
 

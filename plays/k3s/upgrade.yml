@@ -3,7 +3,7 @@
 # traefik_chart_version, cert_manager_chart_version,
 # nfs_provisioner_chart_version, argocd_chart_version, kps_chart_version,
 # loki_chart_version, tempo_chart_version, alloy_chart_version,
-# uptime_kuma_chart_version, authentik_chart_version, valkey_image,
+# openbao_chart_version, authentik_chart_version, valkey_image,
 # postgres_proxy_image in group_vars, then run this play.
 #
 # Safe to also run this with no version changes — it doubles as the weekly
@@ -349,39 +349,6 @@
         name: k3s/alloy
       when: alloy_deployed_version | default('') != alloy_chart_version
 
-- name: roeden | Uptime Kuma upgrade
-  hosts: k3s-cp1
-  become: true
-  gather_facts: false
-  tasks:
-    - name: Read deployed Uptime Kuma chart version
-      command: >
-        helm list -n {{ observability_namespace }}
-        --filter ^uptime-kuma$
-        --kubeconfig /etc/rancher/k3s/k3s.yaml
-        -o json
-      register: uptime_kuma_helm_list
-      changed_when: false
-      failed_when: false
-
-    - name: Parse deployed Uptime Kuma chart version
-      set_fact:
-        uptime_kuma_deployed_version: >-
-          {{ (uptime_kuma_helm_list.stdout | from_json | first).chart
-             | default('')
-             | regex_replace('^uptime-kuma-', '') }}
-      when: uptime_kuma_helm_list.rc == 0 and uptime_kuma_helm_list.stdout | length > 2
-
-    - name: Skip Uptime Kuma — already at target
-      debug:
-        msg: "Uptime Kuma already at {{ uptime_kuma_chart_version }}"
-      when: uptime_kuma_deployed_version | default('') == uptime_kuma_chart_version
-
-    - name: Upgrade Uptime Kuma chart
-      include_role:
-        name: k3s/uptime_kuma
-      when: uptime_kuma_deployed_version | default('') != uptime_kuma_chart_version
-
 - name: roeden | postgres-proxy (HAProxy) upgrade
   hosts: k3s-cp1
   become: true
@@ -480,6 +447,54 @@
       include_role:
         name: k3s/authentik
       when: authentik_deployed_version | default('') != authentik_chart_version
+
+- name: roeden | OpenBao upgrade
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read deployed OpenBao chart version
+      command: >
+        helm list -n {{ openbao_namespace }}
+        --filter ^openbao$
+        --kubeconfig /etc/rancher/k3s/k3s.yaml
+        -o json
+      register: openbao_helm_list
+      changed_when: false
+      failed_when: false
+
+    - name: Parse deployed OpenBao chart version
+      set_fact:
+        openbao_deployed_version: >-
+          {{ (openbao_helm_list.stdout | from_json | first).chart
+             | default('')
+             | regex_replace('^openbao-', '') }}
+      when: openbao_helm_list.rc == 0 and openbao_helm_list.stdout | length > 2
+
+    - name: Skip OpenBao — already at target
+      debug:
+        msg: "OpenBao already at {{ openbao_chart_version }}"
+      when: openbao_deployed_version | default('') == openbao_chart_version
+
+    # Full role does helm upgrade + wait + unseal + configure. The role's
+    # tasks/main.yml is idempotent: init step is conditional on artifacts/,
+    # unseal skips already-unsealed pods, configure skips already-enabled
+    # mounts. So this is safe to re-run every upgrade.
+    - name: Upgrade OpenBao chart
+      include_role:
+        name: k3s/openbao
+      when: openbao_deployed_version | default('') != openbao_chart_version
+
+    # When NO helm upgrade ran, still sweep for sealed pods — covers the
+    # case where a pod was rescheduled (node power-cycle, evict, etc.) and
+    # came up sealed between upgrade windows. Idempotent — no-op when all
+    # pods are already unsealed. (When the chart DID upgrade above, main.yml
+    # already ran unseal, so we skip this branch to avoid the double-call.)
+    - name: Sweep for sealed OpenBao pods (idempotent)
+      include_role:
+        name: k3s/openbao
+        tasks_from: unseal.yml
+      when: openbao_deployed_version | default('') == openbao_chart_version
 
 - name: roeden | internal leaf cert renewal
   hosts: k3s-cp1

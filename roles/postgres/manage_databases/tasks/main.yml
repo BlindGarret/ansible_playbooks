@@ -54,3 +54,20 @@
   delegate_to: "{{ pg_leader }}"
   become_user: postgres
   run_once: true
+
+# OpenBao's database secrets engine connects as `vault_admin` to mint dynamic
+# per-app credentials. SUPERUSER chosen for homelab simplicity — it sidesteps
+# the per-database ownership grant chain that a least-privilege vault_admin
+# would require (membership in every app owner role + explicit GRANT chains).
+# Trade-off: compromise of vault_admin == full Postgres compromise, but so
+# does compromise of the OpenBao root token, so the blast radius is bounded
+# by the same artifact-protection posture.
+- name: Ensure vault_admin Postgres user (SUPERUSER, used by OpenBao database engine)
+  community.postgresql.postgresql_user:
+    name: vault_admin
+    password: "{{ lookup('file', playbook_dir ~ '/' ~ openbao_vault_admin_postgres_password_path) | trim }}"
+    role_attr_flags: SUPERUSER,CREATEROLE,CREATEDB,LOGIN
+    state: present
+  delegate_to: "{{ pg_leader }}"
+  become_user: postgres
+  run_once: true

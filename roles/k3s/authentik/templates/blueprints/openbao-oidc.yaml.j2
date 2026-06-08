@@ -1,0 +1,68 @@
+# OpenBao OIDC integration — declarative.
+# Mirror of grafana-oidc.yaml.j2 / argocd-oidc.yaml.j2 — see those for
+# detailed comments on each entry type. client_secret comes from the
+# OPENBAO_OIDC_CLIENT_SECRET env var injected into the Authentik pod from
+# the openbao-oidc-secret Secret.
+
+version: 1
+metadata:
+  name: openbao-oidc
+  labels:
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+  - model: authentik_core.group
+    identifiers:
+      name: "{{ openbao_admins_group_name }}"
+    attrs:
+      is_superuser: false
+
+  - model: authentik_providers_oauth2.scopemapping
+    id: openbao-scope-groups
+    identifiers:
+      name: "openbao-scope-groups"
+    attrs:
+      scope_name: "groups"
+      description: "Group names — used by OpenBao OIDC role binding"
+      expression: |
+        return {"groups": [group.name for group in request.user.ak_groups.all()]}
+
+  - model: authentik_providers_oauth2.oauth2provider
+    id: openbao-provider
+    identifiers:
+      name: "openbao-provider"
+    attrs:
+      authorization_flow: !Find [authentik_flows.flow, [slug, "default-provider-authorization-implicit-consent"]]
+      authentication_flow: !Find [authentik_flows.flow, [slug, "default-authentication-flow"]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, "default-provider-invalidation-flow"]]
+      client_type: confidential
+      client_id: "openbao"
+      client_secret: !Env OPENBAO_OIDC_CLIENT_SECRET
+      access_token_validity: "hours=1"
+      refresh_token_validity: "days=30"
+      grant_types:
+        - "authorization_code"
+        - "refresh_token"
+      redirect_uris:
+        # UI flow — browser bounces back here after Authentik consent.
+        - matching_mode: "strict"
+          url: "https://{{ openbao_hostname }}/ui/vault/auth/oidc/oidc/callback"
+        # CLI flow — `bao login -method=oidc` opens this on the user's machine.
+        - matching_mode: "strict"
+          url: "http://localhost:8250/oidc/callback"
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, "openid"]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, "profile"]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, "email"]]
+        - !KeyOf openbao-scope-groups
+
+  - model: authentik_core.application
+    identifiers:
+      slug: "openbao"
+    attrs:
+      name: "OpenBao"
+      provider: !KeyOf openbao-provider
+      meta_launch_url: "https://{{ openbao_hostname }}/"
+      policy_engine_mode: all
+      group: ""

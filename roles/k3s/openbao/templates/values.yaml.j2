@@ -1,0 +1,93 @@
+# OpenBao chart values — managed by ansible.
+# 3-pod HA cluster using integrated raft storage on NFS-backed PVCs.
+# Traefik terminates TLS at the ingress; OpenBao itself speaks plain HTTP
+# behind it (same pattern as ArgoCD).
+global:
+  enabled: true
+  # Listener speaks plain HTTP — Traefik wraps TLS at the ingress.
+  tlsDisable: true
+
+# The agent-injector is the sidecar pattern that automounts secrets into pods.
+# We're using the explicit-fetch pattern instead (apps call the API via
+# Kubernetes SA auth), so the injector is dead weight.
+injector:
+  enabled: false
+
+server:
+  # Parallel pod startup is required for raft HA: the default OrderedReady
+  # policy waits for pod N-1 to become Ready before creating pod N, but
+  # sealed pods never become Ready (readinessProbe fails-when-sealed by
+  # design). With OrderedReady, only openbao-0 ever gets created; openbao-1
+  # and openbao-2 stay missing forever, init never runs, no progress.
+  # Parallel lets all 3 pods start at once, each comes up Running-but-sealed,
+  # Ansible then inits openbao-0 and unseals all three.
+  podManagementPolicy: Parallel
+  ha:
+    enabled: true
+    replicas: {{ openbao_pod_count }}
+    raft:
+      enabled: true
+      # Unique node_id per pod (pod name) — required so raft can distinguish
+      # cluster members across restarts.
+      setNodeId: true
+      # Override the chart's default raft config to add retry_join blocks.
+      # Without these, followers (openbao-1, openbao-2) never join the raft
+      # cluster — they stay sealed and uninitialized forever. With retry_join,
+      # each follower polls the listed addresses until one responds as an
+      # unsealed leader, then joins. The role's unseal logic unseals
+      # openbao-0 first so the followers' retry_join can succeed.
+      config: |
+        ui = true
+
+        listener "tcp" {
+          tls_disable = 1
+          address = "[::]:8200"
+          cluster_address = "[::]:8201"
+        }
+
+        storage "raft" {
+          path = "/openbao/data"
+        {% for i in range(openbao_pod_count) %}
+          retry_join {
+            leader_api_addr = "http://openbao-{{ i }}.openbao-internal:8200"
+          }
+        {% endfor %}
+        }
+
+        service_registration "kubernetes" {}
+
+  # Persistent raft data per pod. NFS is fine — raft fsyncs are infrequent
+  # compared to e.g. SQLite-on-NFS workloads, and the dataset is small.
+  dataStorage:
+    enabled: true
+    storageClass: "{{ nfs_storage_class_name }}"
+    size: "{{ openbao_storage_size }}"
+
+  # Mount the internal CA so OpenBao's outbound HTTP clients (OIDC discovery
+  # against Authentik over https://auth.roeden.lab) trust *.roeden.lab certs.
+  # BAO_CACERT is read by the bao binary AND by the API server's HTTP client.
+  extraEnvironmentVars:
+    BAO_CACERT: /openbao/userconfig/internal-ca/ca.crt
+  volumes:
+    - name: internal-ca
+      configMap:
+        name: internal-ca
+  volumeMounts:
+    - name: internal-ca
+      mountPath: /openbao/userconfig/internal-ca
+      readOnly: true
+
+  ingress:
+    enabled: true
+    ingressClassName: "{{ openbao_ingress_class }}"
+    hosts:
+      - host: "{{ openbao_hostname }}"
+        paths: []
+    tls:
+      - secretName: "{{ openbao_tls_secret_name }}"
+        hosts:
+          - "{{ openbao_hostname }}"
+
+# UI — served from the same pods.
+ui:
+  enabled: true

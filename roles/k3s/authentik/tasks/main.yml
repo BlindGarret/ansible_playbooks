@@ -9,7 +9,7 @@
       metadata:
         name: "{{ authentik_namespace }}"
 
-# Ingress TLS Secret — same pattern as ArgoCD / Grafana / Uptime Kuma.
+# Ingress TLS Secret — same pattern as ArgoCD / Grafana.
 # internal_leaf_cert refreshes this Secret when the cert rotates.
 - name: Create internal-tls Secret in authentik namespace
   kubernetes.core.k8s:
@@ -47,6 +47,7 @@
         # Add new app integrations as new keys + new subPath mounts.
         grafana-oidc.yaml: "{{ lookup('template', 'blueprints/grafana-oidc.yaml.j2') }}"
         argocd-oidc.yaml: "{{ lookup('template', 'blueprints/argocd-oidc.yaml.j2') }}"
+        openbao-oidc.yaml: "{{ lookup('template', 'blueprints/openbao-oidc.yaml.j2') }}"
 
 # OIDC client_secrets — same value mounted into Authentik (env var read by
 # the blueprint's !Env directive) and into the consuming app (env var read
@@ -78,6 +79,20 @@
         namespace: "{{ authentik_namespace }}"
       stringData:
         client-secret: "{{ lookup('file', playbook_dir ~ '/' ~ argocd_oidc_client_secret_path) | trim }}"
+
+- name: Create OpenBao OIDC client_secret in authentik namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ authentik_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: Opaque
+      metadata:
+        name: openbao-oidc-secret
+        namespace: "{{ authentik_namespace }}"
+      stringData:
+        client-secret: "{{ lookup('file', playbook_dir ~ '/' ~ openbao_oidc_client_secret_path) | trim }}"
 
 # Channel 2: NFS-backed PVC mounted at /blueprints/apps/ — app-managed.
 # Custom apps drop their own *.yaml here; Authentik picks them up on dir watch.

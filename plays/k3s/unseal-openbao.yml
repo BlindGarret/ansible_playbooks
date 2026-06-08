@@ -1,0 +1,23 @@
+---
+# Standalone unseal pass. Run this after anything that left OpenBao pods
+# sealed when the normal services/upgrade plays aren't being run — e.g.
+# a manual `kubectl rollout restart`, node power-cycle, etc.
+#
+# Idempotent: pods already unsealed are no-ops.
+#
+# Requires artifacts/openbao-init.json on the controller (written by the
+# first run of the openbao role during initial bootstrap). If that file is
+# missing, the cluster CANNOT be unsealed — you have lost the keys.
+#
+# Usage:
+#   ansible-playbook -i inventories/roeden/hosts.yml plays/k3s/unseal-openbao.yml
+
+- name: roeden | OpenBao unseal
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Unseal sealed OpenBao pods
+      include_role:
+        name: k3s/openbao
+        tasks_from: unseal.yml

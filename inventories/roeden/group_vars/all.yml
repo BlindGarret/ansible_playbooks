@@ -139,12 +139,6 @@ tempo_chart_version: "1.24.4"
 tempo_retention_hours: 168    # 7 days
 tempo_storage_size: 20Gi
 
-# Uptime Kuma — external "is the front door open?" probes + Discord notifications.
-# Independent of cluster internals on purpose.
-# Check https://github.com/dirsigler/uptime-kuma-helm/releases
-uptime_kuma_chart_version: "4.1.0"
-uptime_kuma_hostname: uptime.roeden.lab
-
 # Valkey — single-instance Redis-protocol cache, shared across apps.
 # BSD-licensed Redis fork maintained by Linux Foundation (AWS/Google/Oracle).
 # Apps connect to valkey.valkey.svc:6379 — never use a chart's bundled Redis.
@@ -190,6 +184,20 @@ grafana_admins_group_name: "grafana-admins"
 # fallback at homelab scale — easier to grant readonly via membership later).
 argocd_oidc_client_secret_path: "../../artifacts/argocd-oidc-client-secret"
 argocd_admins_group_name: "argocd-admins"
+
+# OpenBao (Apache-2.0 Vault fork). 3-pod raft cluster, NFS PVCs, integrated
+# storage. The init step on first run writes the 5 unseal keys + root token
+# to artifacts/openbao-init.json — that file is the one and only way to
+# unseal the cluster. Protect it like the CA private key.
+# Chart 0.28.3 bundles OpenBao v2.5.4.
+# Check https://github.com/openbao/openbao-helm/releases
+openbao_chart_version: "0.28.3"
+openbao_hostname: vault.roeden.lab
+openbao_storage_size: 5Gi
+openbao_init_keys_path: "../../artifacts/openbao-init.json"
+openbao_vault_admin_postgres_password_path: "../../artifacts/openbao-vault-admin-postgres-password"
+openbao_oidc_client_secret_path: "../../artifacts/openbao-oidc-client-secret"
+openbao_admins_group_name: "openbao-admins"
 
 # Internal TLS chain. The CA is the trust anchor (distributed to nodes' and
 # clients' CA stores). The leaf cert is what Traefik actually serves; it's

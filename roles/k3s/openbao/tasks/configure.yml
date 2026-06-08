@@ -1,0 +1,170 @@
+---
+# One-time-ish configuration of auth methods + secrets engines.
+# Idempotent via "list mounts, grep for ours, skip if present" checks.
+# All commands run against openbao-0 (the raft leader after init) using the
+# root token from artifacts/.
+
+- name: Read root token from artifacts/
+  set_fact:
+    openbao_root_token: "{{ (lookup('file', playbook_dir ~ '/' ~ openbao_init_keys_path) | from_json).root_token }}"
+  no_log: true
+
+# --- Kubernetes auth method --------------------------------------------------
+# Lets in-cluster pods authenticate to OpenBao using their ServiceAccount
+# token. Apps later create OpenBao roles bound to specific SAs + namespaces.
+- name: Check whether kubernetes/ auth method is enabled
+  shell: |
+    kubectl --kubeconfig {{ openbao_kubeconfig }} -n {{ openbao_namespace }} \
+      exec openbao-0 -- env BAO_TOKEN={{ openbao_root_token }} \
+      bao auth list -format=json
+  register: openbao_auth_list
+  changed_when: false
+  no_log: true
+
+- name: Enable kubernetes/ auth method
+  command: >
+    kubectl --kubeconfig {{ openbao_kubeconfig }}
+    -n {{ openbao_namespace }}
+    exec openbao-0 --
+    env BAO_TOKEN={{ openbao_root_token }}
+    bao auth enable kubernetes
+  when: '"kubernetes/" not in (openbao_auth_list.stdout | from_json)'
+  no_log: true
+
+# Point the k8s auth method at the kube API. Re-running `bao write` here is
+# idempotent — it replaces the config with the same values.
+- name: Configure kubernetes/ auth method
+  command: >
+    kubectl --kubeconfig {{ openbao_kubeconfig }}
+    -n {{ openbao_namespace }}
+    exec openbao-0 --
+    env BAO_TOKEN={{ openbao_root_token }}
+    bao write auth/kubernetes/config
+      kubernetes_host=https://kubernetes.default.svc:443
+  changed_when: false
+  no_log: true
+
+# --- Admin policy ------------------------------------------------------------
+# OpenBao ships only `default` and `root` policies out of the box. The OIDC
+# admins role below assigns `admin` — we have to define what that means.
+# Full sudo-on-everything; root-equivalent in practice. The OIDC group binding
+# (openbao-admins) is what gates who actually receives this policy.
+- name: Create admin policy
+  shell: |
+    kubectl --kubeconfig {{ openbao_kubeconfig }} -n {{ openbao_namespace }} \
+      exec -i openbao-0 -- \
+      env BAO_TOKEN={{ openbao_root_token }} \
+      bao policy write admin - <<'HCL'
+    path "*" {
+      capabilities = ["create", "read", "update", "delete", "list", "sudo"]
+    }
+    HCL
+  changed_when: false
+  no_log: true
+
+# --- OIDC auth method (Authentik) --------------------------------------------
+- name: Enable oidc/ auth method
+  command: >
+    kubectl --kubeconfig {{ openbao_kubeconfig }}
+    -n {{ openbao_namespace }}
+    exec openbao-0 --
+    env BAO_TOKEN={{ openbao_root_token }}
+    bao auth enable oidc
+  when: '"oidc/" not in (openbao_auth_list.stdout | from_json)'
+  no_log: true
+
+- name: Configure oidc/ auth method (Authentik discovery + client)
+  # oidc_discovery_ca_pem=@<path> tells OpenBao to read the CA from a file
+  # inside the pod — we mount roeden-ca.crt at this path via the chart values.
+  # Without this, OpenBao's outbound HTTPS to Authentik fails with
+  # "certificate verify failed" since pod system trust store has no clue
+  # about our internal CA. BAO_CACERT (the env var) only governs the bao
+  # CLI's own client connection, not the server's outbound HTTPS.
+  # The trailing slash on oidc_discovery_url is LOAD-BEARING: Authentik's
+  # discovery doc returns the issuer with a trailing slash, and OIDC clients
+  # require oidc_discovery_url to match issuer exactly. Mismatch surfaces
+  # only as "error checking oidc discovery URL" with no further context.
+  command: >
+    kubectl --kubeconfig {{ openbao_kubeconfig }}
+    -n {{ openbao_namespace }}
+    exec openbao-0 --
+    env BAO_TOKEN={{ openbao_root_token }}
+    bao write auth/oidc/config
+      oidc_discovery_url=https://{{ authentik_hostname }}/application/o/openbao/
+      oidc_discovery_ca_pem=@/openbao/userconfig/internal-ca/ca.crt
+      oidc_client_id=openbao
+      oidc_client_secret={{ lookup('file', playbook_dir ~ '/' ~ openbao_oidc_client_secret_path) | trim }}
+      default_role=admins
+  changed_when: false
+  no_log: true
+
+# Role mapping: anyone whose ID token's `groups` claim contains the admins
+# group gets the admin policy (root-equivalent). Add more roles as needs grow.
+#
+# Why stdin/JSON instead of key=value flags: bound_claims is a Map field, and
+# the bao CLI doesn't auto-parse JSON in `key=value` arguments — it ships the
+# JSON as a string, which the API rejects with "expected type map[string]...,
+# got unconvertible type 'string'". `bao write path -` reads a JSON payload
+# from stdin and submits it whole, with correct field typing.
+- name: Configure oidc/ admins role
+  shell: |
+    kubectl --kubeconfig {{ openbao_kubeconfig }} -n {{ openbao_namespace }} \
+      exec -i openbao-0 -- \
+      env BAO_TOKEN={{ openbao_root_token }} \
+      bao write auth/oidc/role/admins - <<'JSON'
+    {
+      "bound_audiences": "openbao",
+      "allowed_redirect_uris": [
+        "https://{{ openbao_hostname }}/ui/vault/auth/oidc/oidc/callback",
+        "https://{{ openbao_hostname }}/oidc/callback"
+      ],
+      "user_claim": "sub",
+      "bound_claims": {"groups": ["{{ openbao_admins_group_name }}"]},
+      "token_policies": "admin",
+      "oidc_scopes": ["openid", "profile", "email", "groups"]
+    }
+    JSON
+  changed_when: false
+  no_log: true
+
+# --- Database secrets engine (Postgres connection only) ----------------------
+# Connection config registered here; per-app DB roles are NOT registered by
+# Ansible — apps register their own at deploy time (sync-wave init container
+# or similar pattern, TBD in the helm chart work that follows).
+- name: Check whether database/ secrets engine is enabled
+  shell: |
+    kubectl --kubeconfig {{ openbao_kubeconfig }} -n {{ openbao_namespace }} \
+      exec openbao-0 -- env BAO_TOKEN={{ openbao_root_token }} \
+      bao secrets list -format=json
+  register: openbao_secrets_list
+  changed_when: false
+  no_log: true
+
+- name: Enable database/ secrets engine
+  command: >
+    kubectl --kubeconfig {{ openbao_kubeconfig }}
+    -n {{ openbao_namespace }}
+    exec openbao-0 --
+    env BAO_TOKEN={{ openbao_root_token }}
+    bao secrets enable database
+  when: '"database/" not in (openbao_secrets_list.stdout | from_json)'
+  no_log: true
+
+# Register the Postgres connection. allowed_roles="*" means any role created
+# under database/roles/* can use this connection — convenient because we want
+# apps to self-register roles without needing to come back and update an
+# allowlist here.
+- name: Configure database/config/postgres connection
+  command: >
+    kubectl --kubeconfig {{ openbao_kubeconfig }}
+    -n {{ openbao_namespace }}
+    exec openbao-0 --
+    env BAO_TOKEN={{ openbao_root_token }}
+    bao write database/config/postgres
+      plugin_name=postgresql-database-plugin
+      allowed_roles=*
+      connection_url=postgresql://{% raw %}{{username}}:{{password}}{% endraw %}@{{ postgres_proxy_service_name | default('postgres-rw') }}.{{ postgres_proxy_namespace | default('postgres') }}.svc:5432/postgres?sslmode=disable
+      username=vault_admin
+      password={{ lookup('file', playbook_dir ~ '/' ~ openbao_vault_admin_postgres_password_path) | trim }}
+  changed_when: false
+  no_log: true
