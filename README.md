@@ -500,6 +500,62 @@ form is hidden via `disable_login_form: true`). The chart's auto-generated
 admin password Secrets still exist in each namespace as break-glass — if
 SSO breaks, you can re-enable admin and log in with that password.
 
+### Internal vs external SSO (which Authentik URL to point at)
+
+The same Authentik instance is reachable at **two** hostnames:
+
+- `auth.roeden.lab` — served by the chart's built-in Ingress through
+  `traefik-internal`, internal CA cert. Use for apps on `*.roeden.lab`.
+- `auth.roedev.com` — served by an HTTPRoute attached to the external
+  Gateway (`traefik-external`), Let's Encrypt cert via the wildcard
+  `*.roedev.com` cert that lives on that Gateway. Use for apps on
+  `*.roedev.com`.
+
+Same identity store, same blueprints, same users. **Sessions don't span
+the two hostnames** — cookies are domain-scoped, so logging in via
+`auth.roeden.lab` doesn't carry to `auth.roedev.com` and vice versa. For
+a user who hits both internal and external apps, that's two logins per
+work session. Acceptable trade-off for the resilience win (internal SSO
+survives WAN/Cloudflare outages).
+
+Rule of thumb for picking the issuer when adding a new app:
+
+- App's Ingress is `traefik-internal` → app's OIDC issuer is `auth.roeden.lab`
+- App's HTTPRoute is `traefik-external` → app's OIDC issuer is `auth.roedev.com`
+
+Always match: the issuer URL the app's OIDC client discovers MUST be
+reachable from the same network/internet position the app's users are on.
+
+Prerequisites for the external path (one-time):
+
+- **Public DNS**: `auth.roedev.com` resolves to your home public IP. The
+  existing wildcard `*.roedev.com` A record (at your registrar) already
+  handles this — no per-host record needed.
+- **No new cert needed** — the wildcard `*.roedev.com` cert on the external
+  Gateway already covers `auth.roedev.com`.
+- **No internal DNS override** — by design. Internal users who want LAN-
+  direct access use `auth.roeden.lab`. Internal users who hit `auth.roedev.com`
+  hairpin out through the WAN and back in via the public path. Keeping the
+  two paths actually distinct (no split-horizon shortcut) means "internal"
+  and "external" stay honest categories rather than blurring into a middle
+  case. Requires hairpin NAT on the edge router (EdgeOS: on by default for
+  destination-NAT rules).
+
+### Adding an external-facing app (preview — codified once the helm chart lands)
+
+For an app you're exposing on `*.roedev.com` that wants SSO:
+
+1. App's `HTTPRoute` attaches to the **external** Gateway with hostname
+   `<app>.roedev.com`.
+2. App's OIDC blueprint sets `oidc_discovery_url=https://auth.roedev.com/application/o/<app>/`
+   and `redirect_uris` pointing at `https://<app>.roedev.com/...`.
+3. Everything else (group binding, scope mapping, blueprint application
+   via the apps channel) is identical to the internal pattern.
+
+The forthcoming app helm chart bakes this in as a single `exposure:
+internal|external` value — chart picks the right hostname, Gateway, and
+issuer URL based on that one knob.
+
 ---
 
 ## OpenBao — secrets, dynamic Postgres creds, unseal ops

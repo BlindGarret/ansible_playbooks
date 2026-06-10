@@ -135,6 +135,36 @@
     # initial deploy can take several minutes.
     timeout: 10m
 
+# External SSO path. The chart's built-in Ingress handles auth.roeden.lab
+# (traefik-internal). For the public hostname we attach an HTTPRoute to the
+# external Gateway — the *.roedev.com wildcard cert lives on that Gateway
+# already, so no per-namespace TLS Secret copying is needed.
+# Backend `authentik-server:80` is the chart's standard Service.
+- name: Create external HTTPRoute for Authentik
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ authentik_kubeconfig }}"
+    definition:
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: authentik-external
+        namespace: "{{ authentik_namespace }}"
+      spec:
+        parentRefs:
+          - name: "{{ external_gateway_name }}"
+            namespace: "{{ traefik_namespace }}"
+        hostnames:
+          - "{{ authentik_external_hostname }}"
+        rules:
+          - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+            backendRefs:
+              - name: authentik-server
+                port: 80
+
 # Explicitly trigger blueprint discovery after the helm upgrade settles. The
 # startup-time discovery the pod runs on its own has an observed race where
 # newly-mounted blueprints can be silently skipped on first scan; a manual

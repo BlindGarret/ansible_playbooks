@@ -168,3 +168,99 @@
       password={{ lookup('file', playbook_dir ~ '/' ~ openbao_vault_admin_postgres_password_path) | trim }}
   changed_when: false
   no_log: true
+
+# --- Chart bootstrap (KV + chart-admin policy + chart-bootstrap K8s role) ----
+# These enable the roeden-app helm chart's pre-install Jobs to bootstrap their
+# own per-app Vault state (DB role + per-app policy + per-app K8s auth role).
+# Without these, any `helm install` that enables postgres/sso/openbao in the
+# roeden-app chart fails at the init hook.
+#
+# Trust model: chart-bootstrap is bound to ANY ServiceAccount in ANY namespace.
+# That's "any pod-deployer in the cluster gets chart-admin during install".
+# For a homelab where cluster-admin == trusted human, this is fine. Tighten
+# the bound_* selectors if you ever want to scope it.
+
+- name: Re-check secrets-engines list (post-database/ enable)
+  shell: |
+    kubectl --kubeconfig {{ openbao_kubeconfig }} -n {{ openbao_namespace }} \
+      exec openbao-0 -- env BAO_TOKEN={{ openbao_root_token }} \
+      bao secrets list -format=json
+  register: openbao_secrets_list_post
+  changed_when: false
+  no_log: true
+
+- name: Enable kv-v2 secrets engine at kv/
+  command: >
+    kubectl --kubeconfig {{ openbao_kubeconfig }}
+    -n {{ openbao_namespace }}
+    exec openbao-0 --
+    env BAO_TOKEN={{ openbao_root_token }}
+    bao secrets enable -path=kv kv-v2
+  when: '"kv/" not in (openbao_secrets_list_post.stdout | from_json)'
+  no_log: true
+
+# `bao kv put` is idempotent — writes the same value as a no-op overwrite on
+# subsequent runs. The password lives only in artifacts/ on the controller
+# and as a Postgres role secret; this seeds it into OpenBao KV so that
+# chart-admin-policy holders (the helm chart's init Jobs) can read it to
+# perform CREATE DATABASE against Postgres without needing a cross-namespace
+# Secret lookup.
+- name: Seed kv/platform/postgres/vault_admin with the PG admin password
+  command: >
+    kubectl --kubeconfig {{ openbao_kubeconfig }}
+    -n {{ openbao_namespace }}
+    exec openbao-0 --
+    env BAO_TOKEN={{ openbao_root_token }}
+    bao kv put kv/platform/postgres/vault_admin
+      password={{ lookup('file', playbook_dir ~ '/' ~ openbao_vault_admin_postgres_password_path) | trim }}
+  changed_when: false
+  no_log: true
+
+# Chart-admin policy. Scoped to:
+#   - read on kv/data/platform/* (PG password lookup, and any future shared
+#     platform secrets)
+#   - full CRUD on database/roles/* (chart registers per-app DB roles)
+#   - full CRUD on sys/policies/acl/* (chart creates per-app policies)
+#   - full CRUD on auth/kubernetes/role/* (chart binds per-app K8s auth roles)
+# Notably NO sudo, no access to anything else (raft ops, root rotation, etc).
+- name: Create chart-admin policy
+  shell: |
+    kubectl --kubeconfig {{ openbao_kubeconfig }} -n {{ openbao_namespace }} \
+      exec -i openbao-0 -- \
+      env BAO_TOKEN={{ openbao_root_token }} \
+      bao policy write chart-admin - <<'HCL'
+    path "kv/data/platform/*" {
+      capabilities = ["read"]
+    }
+    path "database/roles/*" {
+      capabilities = ["create", "read", "update", "delete"]
+    }
+    path "sys/policies/acl/*" {
+      capabilities = ["create", "read", "update", "delete"]
+    }
+    path "auth/kubernetes/role/*" {
+      capabilities = ["create", "read", "update", "delete"]
+    }
+    HCL
+  changed_when: false
+  no_log: true
+
+# chart-bootstrap K8s auth role. Any SA in any namespace authenticating with
+# its in-cluster token can claim this role and receive a chart-admin token.
+# Short TTL means the bootstrap token expires quickly after the install Job
+# completes — the per-app k8s auth roles the Job creates are what runtime
+# pods use, scoped narrowly to that app's own secrets.
+- name: Create chart-bootstrap K8s auth role
+  command: >
+    kubectl --kubeconfig {{ openbao_kubeconfig }}
+    -n {{ openbao_namespace }}
+    exec openbao-0 --
+    env BAO_TOKEN={{ openbao_root_token }}
+    bao write auth/kubernetes/role/chart-bootstrap
+      bound_service_account_names=*
+      bound_service_account_namespaces=*
+      token_policies=chart-admin
+      token_ttl=10m
+      token_max_ttl=30m
+  changed_when: false
+  no_log: true

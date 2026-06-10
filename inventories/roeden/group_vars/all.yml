@@ -185,6 +185,22 @@ grafana_admins_group_name: "grafana-admins"
 argocd_oidc_client_secret_path: "../../artifacts/argocd-oidc-client-secret"
 argocd_admins_group_name: "argocd-admins"
 
+# Authentik external hostname — same Authentik instance, second address.
+# Internal apps continue using authentik_hostname (auth.roeden.lab) for OIDC.
+# External apps (anything attaching to the traefik-external Gateway) point
+# their OIDC discovery at this URL instead, so users on the public internet
+# can reach the issuer. Sessions don't span the two hostnames — that's the
+# trade-off for keeping the URLs split. See README "Internal vs external SSO".
+authentik_external_hostname: auth.roedev.com
+
+# Gateway names — defined as defaults in the gateways role, but referenced
+# from other roles (authentik HTTPRoute, future external apps). Role defaults
+# aren't visible across role boundaries, so promoted to group_vars. The
+# gateways role still uses these via the usual precedence — values match
+# what's in roles/k3s/gateways/defaults/main.yml.
+internal_gateway_name: internal
+external_gateway_name: external
+
 # OpenBao (Apache-2.0 Vault fork). 3-pod raft cluster, NFS PVCs, integrated
 # storage. The init step on first run writes the 5 unseal keys + root token
 # to artifacts/openbao-init.json — that file is the one and only way to
