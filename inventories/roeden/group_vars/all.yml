@@ -52,6 +52,9 @@ postgres_databases:
   - name: grafana
     user: grafana
     password_path: "../../artifacts/grafana-postgres-password"
+  - name: gitea
+    user: gitea
+    password_path: "../../artifacts/gitea-postgres-password"
 
 # DNS upstream used by pods when the node's /etc/resolv.conf only contains
 # loopback nameservers (e.g. systemd-resolved). The NAS handles both internal
@@ -215,6 +218,29 @@ openbao_vault_admin_postgres_password_path: "../../artifacts/openbao-vault-admin
 openbao_oidc_client_secret_path: "../../artifacts/openbao-oidc-client-secret"
 openbao_admins_group_name: "openbao-admins"
 
+# Gitea — self-hosted Git + built-in Docker registry + built-in Helm chart
+# registry. Replaces "external Git host + separate image registry + separate
+# chart registry" with a single service. EXTERNAL ONLY (git.roedev.com)
+# because Gitea uses Authentik SSO and SSO-using services must pick one
+# network position — OAuth callback URIs canonicalize on a single hostname
+# regardless of where the user started, so dual-URL creates a confusing UX
+# (start on internal, end on external). LAN users hairpin through CF on
+# Git/registry operations; small cost paid for consistency.
+# Chart 12.6.0 ships Gitea 1.26.1.
+# Check https://gitea.com/gitea/helm-gitea/releases
+gitea_chart_version: "12.6.0"
+gitea_hostname: git.roedev.com
+gitea_storage_size: 50Gi
+gitea_admins_group_name: "gitea-admins"
+gitea_postgres_password_path: "../../artifacts/gitea-postgres-password"
+gitea_oidc_client_secret_path: "../../artifacts/gitea-oidc-client-secret"
+# Internal Gitea secrets — pre-generated so re-deploys against existing data
+# (PG + NFS PVC preserved) decrypt cleanly. Lose these AND wipe the data
+# dir = lose nothing; lose these but keep the data = unreadable DB.
+gitea_jwt_secret_path: "../../artifacts/gitea-jwt-secret"
+gitea_secret_key_path: "../../artifacts/gitea-secret-key"
+gitea_internal_token_path: "../../artifacts/gitea-internal-token"
+
 # Internal TLS chain. The CA is the trust anchor (distributed to nodes' and
 # clients' CA stores). The leaf cert is what Traefik actually serves; it's
 # signed by the CA. Both live in artifacts/ which is gitignored.
@@ -249,3 +275,12 @@ letsencrypt_use_staging: false
 # Local file containing your Cloudflare API token (Zone:DNS:Edit, scoped to
 # roedev.com only). artifacts/ is gitignored — keep it there.
 cloudflare_api_token_path: "../../artifacts/cloudflare-api-token"
+
+# Cluster registry pull credentials. The cluster_puller Gitea user is a
+# member of the roeden org; its PAT goes into every k3s node's
+# /etc/rancher/k3s/registries.yaml so containerd can pull private images
+# from git.roedev.com/roeden/* without per-pod imagePullSecrets. See
+# plays/k3s/registry-auth.yml + README §10.5.
+cluster_registry_host: git.roedev.com
+cluster_puller_username: cluster-puller
+cluster_puller_token_path: "../../artifacts/cluster-puller-token"

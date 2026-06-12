@@ -1,0 +1,17 @@
+---
+- name: Ensure /etc/rancher/k3s exists
+  ansible.builtin.file:
+    path: "{{ cluster_registry_auth_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Template registries.yaml
+  ansible.builtin.template:
+    src: registries.yaml.j2
+    dest: "{{ cluster_registry_auth_path }}"
+    owner: root
+    group: root
+    mode: "0600"  # contains the puller PAT
+  notify: restart k3s

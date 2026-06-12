@@ -1,0 +1,10 @@
+---
+# k3s reads registries.yaml at service start. Changes require a restart of
+# the k3s (server) or k3s-agent (worker) systemd unit. Caller plays target
+# k3s_servers and k3s_agents with serial: 1 so the restart rolls one node
+# at a time, keeping the API VIP + workload pods up across the operation.
+- name: restart k3s
+  ansible.builtin.systemd:
+    name: "{{ k3s_service_name }}"
+    state: restarted
+    daemon_reload: true

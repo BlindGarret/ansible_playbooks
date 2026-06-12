@@ -48,6 +48,7 @@
         grafana-oidc.yaml: "{{ lookup('template', 'blueprints/grafana-oidc.yaml.j2') }}"
         argocd-oidc.yaml: "{{ lookup('template', 'blueprints/argocd-oidc.yaml.j2') }}"
         openbao-oidc.yaml: "{{ lookup('template', 'blueprints/openbao-oidc.yaml.j2') }}"
+        gitea-oidc.yaml: "{{ lookup('template', 'blueprints/gitea-oidc.yaml.j2') }}"
 
 # OIDC client_secrets — same value mounted into Authentik (env var read by
 # the blueprint's !Env directive) and into the consuming app (env var read
@@ -93,6 +94,20 @@
         namespace: "{{ authentik_namespace }}"
       stringData:
         client-secret: "{{ lookup('file', playbook_dir ~ '/' ~ openbao_oidc_client_secret_path) | trim }}"
+
+- name: Create Gitea OIDC client_secret in authentik namespace
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ authentik_kubeconfig }}"
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: Opaque
+      metadata:
+        name: gitea-oidc-secret
+        namespace: "{{ authentik_namespace }}"
+      stringData:
+        client-secret: "{{ lookup('file', playbook_dir ~ '/' ~ gitea_oidc_client_secret_path) | trim }}"
 
 # Channel 2: NFS-backed PVC mounted at /blueprints/apps/ — app-managed.
 # Custom apps drop their own *.yaml here; Authentik picks them up on dir watch.

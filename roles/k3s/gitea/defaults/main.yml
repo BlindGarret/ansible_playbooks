@@ -1,0 +1,6 @@
+---
+gitea_chart_repo: https://dl.gitea.com/charts/
+gitea_chart_name: gitea
+gitea_release_name: gitea
+gitea_namespace: gitea
+gitea_kubeconfig: /etc/rancher/k3s/k3s.yaml

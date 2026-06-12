@@ -1,0 +1,50 @@
+---
+# Install cluster-wide registry credentials. Once this runs, any pod on any
+# node can pull from git.roedev.com/<any-roeden-org-repo> with no per-pod
+# imagePullSecrets. The cluster pulls AS the `cluster-puller` Gitea user
+# (member of the roeden org, which is the canonical home for all
+# deployable images on this platform — see README §10.5).
+#
+# Required: artifacts/cluster-puller-token. See README §10.5 for how to
+# create the Gitea user and which scopes the PAT needs.
+#
+# Rollout: serial: 1 across servers then agents — each node restarts k3s
+# (or k3s-agent), but the cluster as a whole stays healthy.
+
+- name: roeden | require cluster puller token
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - role: ../../roles/local/require_user_secrets
+      vars:
+        require_user_secrets:
+          - path: "{{ cluster_puller_token_path }}"
+            description: "Gitea PAT for the cluster-puller service account"
+            instructions: |
+              In Gitea (admin) → Site Administration → Users → Create
+              user 'cluster-puller'. Add it as a member of the 'roeden'
+              org (org → People → Invite). Sign in as cluster-puller and
+              Settings → Applications → Generate Token, scope
+              read:package. Then on the controller:
+                echo -n 'TOKEN' > artifacts/cluster-puller-token
+                chmod 600 artifacts/cluster-puller-token
+
+- name: roeden | registries.yaml on k3s servers
+  hosts: k3s_servers
+  become: true
+  gather_facts: false
+  serial: 1
+  vars:
+    k3s_service_name: k3s
+  roles:
+    - role: ../../roles/k3s/cluster_registry_auth
+
+- name: roeden | registries.yaml on k3s agents
+  hosts: k3s_agents
+  become: true
+  gather_facts: false
+  serial: 1
+  vars:
+    k3s_service_name: k3s-agent
+  roles:
+    - role: ../../roles/k3s/cluster_registry_auth

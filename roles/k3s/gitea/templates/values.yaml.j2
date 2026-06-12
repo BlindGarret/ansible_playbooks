@@ -1,0 +1,204 @@
+# Gitea chart values — managed by ansible.
+# External Postgres (postgres-rw via the in-cluster HAProxy) + external Valkey
+# for cache/session. SSO via Authentik OIDC. Single replica with NFS-backed
+# data PVC.
+
+# Disable bundled subcharts — we use the platform's HA Postgres + shared
+# Valkey. Both flags must be set; the chart ships both standalone PG and HA
+# variants and we don't want either.
+postgresql-ha:
+  enabled: false
+postgresql:
+  enabled: false
+
+# Disable bundled valkey-cluster — we use the shared platform Valkey at
+# valkey.valkey.svc. Cache + session config below points there directly.
+valkey-cluster:
+  enabled: false
+valkey:
+  enabled: false
+
+replicaCount: 1
+
+# Recreate (not RollingUpdate) is required for single-replica Gitea with
+# persistent state on a PVC. The default rolling update strategy creates the
+# new pod BEFORE killing the old one — and Gitea's leveldb queue files
+# (/data/queues/*) use single-writer file locks. With two pods overlapping
+# on the same PVC, the new one CrashLoopBackOffs on
+#   "Failed to create queue: unable to lock level db ... resource temporarily
+#    unavailable"
+# and the rolling update never converges. Recreate accepts a brief outage
+# during upgrades in exchange for the lock arbitration just working.
+strategy:
+  type: Recreate
+
+persistence:
+  enabled: true
+  storageClass: "{{ nfs_storage_class_name }}"
+  size: "{{ gitea_storage_size }}"
+  accessModes:
+    - ReadWriteMany
+
+# Internal CA mounted into the Gitea container so any future internal HTTPS
+# clients (e.g. webhooks to ArgoCD) trust *.roeden.lab certs. OIDC discovery
+# itself uses auth.roedev.com (Let's Encrypt cert, already trusted by the
+# pod's system CA store), so the mount isn't strictly needed for SSO — but
+# it's cheap to keep here against future use.
+extraVolumes:
+  - name: internal-ca
+    configMap:
+      name: internal-ca
+extraVolumeMounts:
+  - name: internal-ca
+    mountPath: /etc/ssl/certs/roeden-ca.crt
+    subPath: ca.crt
+    readOnly: true
+
+# Chart's built-in Ingress is OFF. Gitea is external-only — all traffic comes
+# in through the HTTPRoute attached to the external Gateway by tasks/main.yml.
+# Why external-only: Gitea uses Authentik SSO, and SSO-using services must
+# pick one network position. OAuth redirect URIs canonicalize on a single
+# hostname; dual-URL would just dump users on the canonical one anyway with
+# a confusing start-here-end-there UX. See README "Gitea — Git, container
+# images, helm charts" for the full rationale.
+ingress:
+  enabled: false
+
+# Sensitive config (DB password + Gitea's internal crypto secrets) come in via
+# env vars from Secrets that tasks/main.yml creates. Gitea reads GITEA__X__Y
+# env vars and uses them to override app.ini sections at startup.
+gitea:
+  # OIDC source. The chart's init container runs `gitea admin auth add-oauth`
+  # if a source with this name doesn't already exist — idempotent on upgrade.
+  # autoDiscoverUrl points at the external Authentik because the user's
+  # browser must be able to reach the issuer; auth.roedev.com works for both
+  # internal (hairpin) and external users.
+  oauth:
+    - name: "Authentik"
+      provider: openidConnect
+      key: "gitea"
+      existingSecret: gitea-oidc-secret
+      autoDiscoverUrl: "https://{{ authentik_external_hostname }}/application/o/gitea/.well-known/openid-configuration"
+      # Explicit scopes — default for openidConnect is just `openid`, which
+      # means no `groups` claim in the ID token, which means adminGroup
+      # below silently fails ("not in gitea-admins" because we never see
+      # any groups at all). Asking for `groups` makes Authentik include it.
+      scopes: "openid profile email groups"
+      groupClaimName: "groups"
+      adminGroup: "{{ gitea_admins_group_name }}"
+
+  config:
+    server:
+      DOMAIN: "{{ gitea_hostname }}"
+      ROOT_URL: "https://{{ gitea_hostname }}/"
+      HTTP_PORT: 3000
+      # Enable the LFS endpoint (Git LFS is built-in and useful even at
+      # homelab scale for the occasional large binary in a repo).
+      LFS_START_SERVER: true
+      # Disable SSH for now — the chart's bundled SSH server adds complexity
+      # (extra Service, host key management). HTTPS clone works fine.
+      DISABLE_SSH: true
+      SSH_DOMAIN: "{{ gitea_hostname }}"
+
+    database:
+      DB_TYPE: postgres
+      HOST: "{{ postgres_proxy_service_name | default('postgres-rw') }}.{{ postgres_proxy_namespace | default('postgres') }}.svc:5432"
+      NAME: gitea
+      USER: gitea
+      SSL_MODE: disable
+
+    # Single-instance Valkey on the shared platform service. Password gets
+    # urlencode'd AND a manual `/` → `%2F` replacement: Ansible's urlencode
+    # uses urllib.parse.quote with safe='/' (so `/` is preserved as if it
+    # were a path separator), but here it's part of a base64 password
+    # embedded in URI userinfo where a literal `/` would terminate the
+    # userinfo section and route us to localhost:6379 instead.
+    cache:
+      ENABLED: true
+      ADAPTER: redis
+      HOST: "redis://:{{ lookup('file', playbook_dir ~ '/' ~ valkey_password_path) | trim | urlencode | replace('/', '%2F') }}@{{ valkey_service_name | default('valkey') }}.{{ valkey_namespace | default('valkey') }}.svc:6379/0"
+
+    session:
+      PROVIDER: redis
+      PROVIDER_CONFIG: "redis://:{{ lookup('file', playbook_dir ~ '/' ~ valkey_password_path) | trim | urlencode | replace('/', '%2F') }}@{{ valkey_service_name | default('valkey') }}.{{ valkey_namespace | default('valkey') }}.svc:6379/1"
+
+    queue:
+      # DB-backed queue — survives restarts, single-node-friendly. Redis-backed
+      # queues are faster but require careful failure mode handling.
+      TYPE: level
+
+    service:
+      # No local signup, but OIDC users auto-register on first login.
+      # Combo semantics (and why this is THREE flags, not one):
+      #   DISABLE_REGISTRATION=true blocks every path including OAuth (wrong).
+      #   ALLOW_ONLY_EXTERNAL_REGISTRATION=true blocks the local form but
+      #     just hides it — does NOT actually enable OAuth auto-register;
+      #     that's controlled separately in [oauth2_client] below.
+      #   SHOW_REGISTRATION_BUTTON=false hides the dead "Register" link.
+      DISABLE_REGISTRATION: false
+      ALLOW_ONLY_EXTERNAL_REGISTRATION: true
+      SHOW_REGISTRATION_BUTTON: false
+      # Anonymous users are bounced to login. Public repo browse-without-login
+      # is off by default for the homelab; flip this if you want public read.
+      REQUIRE_SIGNIN_VIEW: true
+      ENABLE_NOTIFY_MAIL: false
+
+    # The actual "create accounts on first OAuth login" switch. Separate from
+    # [service] config — Gitea's account model treats OAuth-driven user
+    # creation as its own subsystem.
+    #   ENABLE_AUTO_REGISTRATION: yes, auto-create on first OAuth login
+    #   USERNAME=nickname: derive Gitea username from the OIDC `nickname`
+    #     claim (Authentik populates that from the user's Authentik username,
+    #     so lroe → lroe). Alternative: `email` (uses local-part of email).
+    #   ACCOUNT_LINKING=login: if the email already maps to a local Gitea
+    #     account, prompt the user to confirm linking instead of silently
+    #     binding. Safer default; switch to `auto` if you want zero prompts.
+    oauth2_client:
+      ENABLE_AUTO_REGISTRATION: true
+      USERNAME: nickname
+      ACCOUNT_LINKING: login
+      UPDATE_AVATAR: true
+
+    # Enable the built-in container registry and Helm package registry. Both
+    # are part of "packages" — Gitea exposes them at:
+    #   docker login {{ gitea_hostname }}
+    #   helm push <chart>.tgz oci://{{ gitea_hostname }}/<owner>/charts
+    packages:
+      ENABLED: true
+      CHUNKED_UPLOAD_PATH: data/tmp/package-upload
+
+    security:
+      # INSTALL_LOCK true: skip the first-run install wizard (we configure
+      # everything via env / app.ini). SECRET_KEY and INTERNAL_TOKEN come
+      # in via env vars below — they can't live here because Gitea reads
+      # app.ini values literally (no $(VAR) substitution).
+      INSTALL_LOCK: true
+
+    oauth2:
+      # JWT_SECRET via env var below. Note: 1.23+ wants ENABLED, not ENABLE.
+      ENABLED: true
+
+  # Sensitive values that the chart can't accept in plain config land here.
+  # Gitea reads GITEA__SECTION__KEY env vars at startup and applies them as
+  # config overrides — this is how the chart authors expect secret passing.
+  additionalConfigFromEnvs:
+    - name: GITEA__DATABASE__PASSWD
+      valueFrom:
+        secretKeyRef:
+          name: gitea-pg-secret
+          key: password
+    - name: GITEA__SECURITY__SECRET_KEY
+      valueFrom:
+        secretKeyRef:
+          name: gitea-internal-secrets
+          key: secret-key
+    - name: GITEA__SECURITY__INTERNAL_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: gitea-internal-secrets
+          key: internal-token
+    - name: GITEA__OAUTH2__JWT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: gitea-internal-secrets
+          key: jwt-secret

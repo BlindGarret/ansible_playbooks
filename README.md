@@ -10,7 +10,8 @@ lifecycle:
 - **k3s cluster** (3 cps + 4 agents) — kubernetes platform. Runs Traefik
   ingress, cert-manager, NFS storage class, ArgoCD, kube-prometheus-stack
   (Prom + Alertmanager + Grafana), Loki + Alloy (logs), Tempo (traces),
-  Authentik (SSO), OpenBao (secrets / dynamic Postgres creds).
+  Authentik (SSO), OpenBao (secrets / dynamic Postgres creds), Gitea
+  (self-hosted Git + container registry + Helm chart registry).
 - **Lab tier** — every host across both above. Shared OS-level concerns:
   apt updates with rolling reboots, internal CA trust distribution.
 
@@ -35,7 +36,7 @@ plays/
   k3s/
     bootstrap.yml          # one-time: stand up the k3s cluster from scratch
     ingress.yml            # idempotent: Traefik + cert-manager + Gateways
-    services.yml           # idempotent: NFS + ArgoCD + KPS + Loki + Alloy + Tempo + Authentik + OpenBao
+    services.yml           # idempotent: NFS + ArgoCD + KPS + Loki + Alloy + Tempo + Authentik + OpenBao + Gitea
     unseal-openbao.yml     # standalone: re-unseal OpenBao pods after restart/eviction
     reconfigure.yml        # rolling restart for k3s node-level config changes
     check-updates.yml      # READ-ONLY: drift report for every tracked component
@@ -113,6 +114,11 @@ forget.
 | `argocd-oidc-client-secret` | ArgoCD OIDC client_secret (shared with Authentik) | `plays/k3s/services.yml` |
 | `openbao-oidc-client-secret` | OpenBao OIDC client_secret (shared with Authentik) | `plays/k3s/services.yml` |
 | `openbao-vault-admin-postgres-password` | Password for the `vault_admin` Postgres role that OpenBao's database engine uses | `plays/k3s/services.yml` |
+| `gitea-postgres-password` | Gitea's Postgres password | `plays/k3s/services.yml` |
+| `gitea-oidc-client-secret` | Gitea OIDC client_secret (shared with Authentik) | `plays/k3s/services.yml` |
+| `gitea-jwt-secret` | Gitea OAuth2 JWT signing key | `plays/k3s/services.yml` |
+| `gitea-secret-key` | Gitea's internal SECRET_KEY — encrypts sensitive fields in the DB | `plays/k3s/services.yml` |
+| `gitea-internal-token` | Gitea's internal-API auth token | `plays/k3s/services.yml` |
 | `postgres-superuser-password` | Postgres cluster admin password | `plays/postgres/bootstrap.yml` |
 | `postgres-replication-password` | Patroni's replication user password | `plays/postgres/bootstrap.yml` |
 
@@ -203,6 +209,10 @@ chmod 600 artifacts/cloudflare-api-token
 # Discord: channel settings → Integrations → Webhooks → New Webhook
 echo -n 'PASTE-WEBHOOK-URL-HERE' > artifacts/discord-webhook-url
 chmod 600 artifacts/discord-webhook-url
+
+# Gitea PAT for cluster-puller (created after Gitea is up — see step 10.5)
+echo -n 'PASTE-PAT-HERE' > artifacts/cluster-puller-token
+chmod 600 artifacts/cluster-puller-token
 ```
 
 Random secrets like the k3s join token and Postgres passwords don't go here
@@ -327,6 +337,11 @@ Everything that lands in this run:
    keys to `artifacts/openbao-init.json`, then unseals all pods. Subsequent
    runs are idempotent (init skipped if keys file present, unseal skipped
    if pods already unsealed).
+9. **Gitea** — Git + built-in container registry + built-in Helm chart
+   registry. Internal Ingress at `git.roeden.lab`, external HTTPRoute at
+   `git.roedev.com`. OIDC against `auth.roedev.com` (works for both internal
+   and external users — internal logins hairpin-NAT through CF on auth).
+   Built-in registries replace standalone Docker + ChartMuseum.
 
 Verify:
 ```bash
@@ -344,6 +359,79 @@ kubectl -n observability get pods
 # kps-prometheus-node-exporter-* (one per node), kube-state-metrics,
 # loki-0 (2/2 Running), alloy-* (one per node) — all Running
 ```
+
+### 10.5 Install cluster registry pull credentials
+
+After Gitea is up (it gets installed by `services.yml` in step 10), the
+cluster needs credentials to pull private container images. This step
+does it **once at the node level** so every pod everywhere can pull from
+Gitea with no per-app `imagePullSecrets`.
+
+#### The policy (one decision, no per-friend recurrence)
+
+All deployable container images live in the **`roeden` Gitea org**:
+
+```
+git.roedev.com/roeden/<image>:<tag>
+```
+
+That's it. Personal namespaces are for source repos and the occasional
+experimental package; anything ArgoCD ever pulls comes from `roeden`.
+Repos under `roeden` stay **private** (org-private packages — outsiders
+can't pull). Everyone with push access to the platform's deployable
+images is an `roeden` org member; new friend joins = invite them to
+`roeden` once.
+
+#### Set up cluster-puller (one-time)
+
+The cluster authenticates to Gitea as a service-account user that's
+**also** a member of `roeden` (so it can read the org's private packages).
+
+1. Sign in to https://git.roedev.com as your admin user
+2. Site Administration → Users → Create User
+   - Username: `cluster-puller`
+3. `roeden` org → People → Invite → add `cluster-puller`
+4. Sign in as `cluster-puller` (or impersonate via admin)
+5. Settings → Applications → Generate New Token
+   - Name: `k3s registries.yaml`
+   - Scope: **`read:package`**
+6. Copy the token into `artifacts/cluster-puller-token` on the controller
+   (already done in step 3 if you knew the value at that point)
+
+#### Apply
+
+```bash
+ansible-playbook -i inventories/roeden/hosts.yml plays/k3s/registry-auth.yml
+```
+
+Templates `/etc/rancher/k3s/registries.yaml` on every k3s node, then
+restarts each node's k3s (or k3s-agent) serially. Existing workloads stay
+up during the rolling restart — only the k3s control plane briefly
+bounces on the node being updated.
+
+#### Verify
+
+```bash
+# Check the file landed on a node
+ssh infraadmin@k3s-w1 sudo cat /etc/rancher/k3s/registries.yaml
+
+# Force a fresh pull of a private Gitea-hosted image
+kubectl run pull-test --rm -i --image=git.roedev.com/roeden/<some-image>:<tag> \
+  --restart=Never -- echo "pull worked"
+```
+
+#### Adding a new friend
+
+1. Gitea admin → invite them to the `roeden` org with write access
+2. They build + push to `git.roedev.com/roeden/<their-app>:<tag>`
+3. Their image is immediately pullable by the cluster, no platform-side
+   change. (Re-running `registry-auth.yml` is **not** required.)
+
+#### Rotating the cluster-puller PAT
+
+Replace `artifacts/cluster-puller-token`, re-run
+`plays/k3s/registry-auth.yml`. The serial restart applies the new value
+across nodes without a workload outage.
 
 ### 11. Trust the CA on your laptop
 
@@ -619,6 +707,112 @@ material stored only in OpenBao is lost.
 Reset path: delete the OpenBao PVCs, `helm uninstall openbao`, re-run the
 role. Fresh cluster, no historical secrets, no continuity.
 
+---
+
+## Gitea — Git, container images, helm charts
+
+Gitea is the self-hosted home for everything that used to require three
+separate services: source control, container registry, Helm chart
+registry. Single binary, one Postgres DB, OIDC via Authentik.
+
+**Reachable only at `https://git.roedev.com/`** (external, via traefik-external
++ the *.roedev.com Let's Encrypt cert). No internal hostname.
+
+### Why external-only — the SSO single-side rule
+
+Any service that uses Authentik SSO sits on exactly ONE network position
+(internal or external), never both. This isn't a stylistic choice — it's a
+hard architectural constraint:
+
+- OAuth-style flows have a single canonical redirect URI tied to the app's
+  configured ROOT_URL.
+- The OIDC provider bounces the browser back to that one URI regardless of
+  where the user started the flow.
+- So a "dual URL" service ends up canonicalizing on whichever URL is
+  declared as ROOT_URL — the other URL just becomes a confusing entry point
+  that always dumps you on the canonical one anyway.
+- Trying to make both sides work cleanly would require host-aware redirect
+  rewriting, per-host session cookies, and a fragile reverse-proxy layer.
+  Not worth it.
+
+So the rule: **SSO-using app picks one side**. Gitea picks external because
+we want push/pull access from anywhere (CI, remote work, sharing with
+external collaborators). LAN users pay a single Cloudflare roundtrip on
+auth, and a hairpin-NAT cost on subsequent Git operations — small price
+for the architectural consistency.
+
+(Authentik itself is the exception: it gets dual URLs because it IS the
+OIDC provider — it has no callbacks of its own to canonicalize.)
+
+The `roeden-app` chart bakes this rule in at the template level: if you
+set `sso.enabled: true` without enabling `expose`, helm install fails
+loudly. There's no way to accidentally end up with the dual-URL anti-pattern
+for an SSO service via the chart.
+
+### Authentication
+
+Gitea uses Authentik OIDC against `auth.roedev.com`. Login flow: click
+"Sign in with Authentik" → bounce to Authentik → consent → back to Gitea
+→ first-time users auto-register (no signup form), subsequent users just
+log in. Group `gitea-admins` membership in Authentik grants Gitea Admin.
+
+Members of the Authentik group `gitea-admins` get the Gitea Admin role
+automatically (via the `groupClaimName` + `adminGroup` config in
+`roles/k3s/gitea/templates/values.yaml.j2`). To grant yourself admin:
+
+1. Authentik admin UI → `gitea-admins` group → Add `lroe`
+2. Log in to Gitea via the SSO button — admin role applied on first login
+
+### Push a container image
+
+```bash
+# Log in. Username is your Gitea username (auto-created on first SSO login).
+# Password is a personal access token — generate one in Gitea: Settings → Applications.
+docker login git.roedev.com -u lroe
+
+# Tag + push. The registry path is git.roedev.com/<owner>/<image-name>:<tag>.
+docker tag myapp:latest git.roedev.com/lroe/myapp:1.0.0
+docker push git.roedev.com/lroe/myapp:1.0.0
+```
+
+Pulls in-cluster use the same URL — k3s containerd has internet access and
+can reach `git.roedev.com` via the wildcard external A record / hairpin NAT.
+If you want to skip the hairpin for in-cluster pulls, retag with
+`git.roeden.lab` and push there too (same registry, both URLs work).
+
+### Push a Helm chart
+
+Gitea supports Helm charts via the OCI distribution spec. From the
+roeden-app chart repo:
+
+```bash
+cd charts/roeden-app
+helm package .                  # produces roeden-app-0.1.0.tgz
+helm registry login git.roedev.com -u lroe
+helm push roeden-app-0.1.0.tgz oci://git.roedev.com/lroe/charts
+```
+
+And to install from it:
+
+```bash
+helm install myapp oci://git.roedev.com/lroe/charts/roeden-app --version 0.1.0 ...
+```
+
+ArgoCD also supports OCI registries; just point an Application's source
+at `repoURL: git.roedev.com/lroe/charts` with `chart: roeden-app`.
+
+### Storage
+
+Gitea's data dir lives on NFS (`gitea_storage_size` in `group_vars/all.yml`,
+default 50 GiB). Contains: Git repos, container layer blobs, helm chart
+artifacts, attachments, avatars. Backups = back up that NFS subdir + a
+`pg_dump gitea` from the Postgres tier. Restoring needs both.
+
+The pre-generated `gitea-secret-key` and `gitea-internal-token` in
+`artifacts/` are required to decrypt sensitive DB fields after a restore.
+Lose them AND restore the DB = unreadable. They live with the same
+protection posture as `roeden-ca.key`.
+
 ### Adding a new app that wants dynamic Postgres creds
 
 The platform-side groundwork is done (database engine configured against
@@ -765,7 +959,7 @@ ansible-playbook -i inventories/roeden/hosts.yml plays/postgres/check-updates.ym
 Both are read-only — query upstream, report drift, print `(up to date)` or
 `(behind, latest X.Y.Z)`. K3s side covers: k3s per node, kube-vip, Traefik,
 cert-manager, Gateway API CRDs, NFS provisioner, ArgoCD,
-kube-prometheus-stack, Loki, Alloy, Tempo, Authentik, OpenBao. Postgres
+kube-prometheus-stack, Loki, Alloy, Tempo, Authentik, OpenBao, Gitea. Postgres
 side covers etcd + Patroni + Postgres minor.
 
 ### Apply Kubernetes upgrades (weekly, even if no version bumps)
@@ -804,9 +998,10 @@ Phases, in order:
 14. **OpenBao** — helm upgrade if behind target. Whether or not the chart
     moves, this phase also sweeps for sealed pods and unseals them
     (covers pod rescheduling between upgrade windows). Idempotent.
-15. **Internal leaf cert** — renew if expiring within 30 days, push fresh
-    Secret to `traefik`, `argocd`, `observability`, `authentik`, `openbao`
-    namespaces
+15. **Gitea** — helm upgrade if behind target
+16. **Internal leaf cert** — renew if expiring within 30 days, push fresh
+    Secret to `traefik`, `argocd`, `observability`, `authentik`, `openbao`,
+    `gitea` namespaces
 
 Each phase fast-skips when configured matches deployed. Safe to re-run.
 

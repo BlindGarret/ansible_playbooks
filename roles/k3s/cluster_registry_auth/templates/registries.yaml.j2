@@ -1,0 +1,15 @@
+{# k3s registries.yaml — read by containerd at k3s start to authenticate
+   image pulls cluster-wide. With this in place, ANY pod on ANY node can
+   pull from {{ cluster_registry_host }}/<owner>/<image>:<tag> without
+   per-pod imagePullSecrets. The credential is the cluster's identity
+   (cluster_puller_username) — a Gitea user who's a member of every org
+   that publishes deployable images.
+
+   Auth applies to every image whose reference starts with the matching
+   `configs:` key.
+#}
+configs:
+  "{{ cluster_registry_host }}":
+    auth:
+      username: "{{ cluster_puller_username }}"
+      password: "{{ lookup('file', playbook_dir ~ '/' ~ cluster_puller_token_path) | trim }}"

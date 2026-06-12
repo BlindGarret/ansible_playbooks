@@ -3,8 +3,8 @@
 # traefik_chart_version, cert_manager_chart_version,
 # nfs_provisioner_chart_version, argocd_chart_version, kps_chart_version,
 # loki_chart_version, tempo_chart_version, alloy_chart_version,
-# openbao_chart_version, authentik_chart_version, valkey_image,
-# postgres_proxy_image in group_vars, then run this play.
+# openbao_chart_version, gitea_chart_version, authentik_chart_version,
+# valkey_image, postgres_proxy_image in group_vars, then run this play.
 #
 # Safe to also run this with no version changes — it doubles as the weekly
 # maintenance pass: the final phase renews the internal leaf cert when it's
@@ -495,6 +495,39 @@
         name: k3s/openbao
         tasks_from: unseal.yml
       when: openbao_deployed_version | default('') == openbao_chart_version
+
+- name: roeden | Gitea upgrade
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read deployed Gitea chart version
+      command: >
+        helm list -n {{ gitea_namespace }}
+        --filter ^gitea$
+        --kubeconfig /etc/rancher/k3s/k3s.yaml
+        -o json
+      register: gitea_helm_list
+      changed_when: false
+      failed_when: false
+
+    - name: Parse deployed Gitea chart version
+      set_fact:
+        gitea_deployed_version: >-
+          {{ (gitea_helm_list.stdout | from_json | first).chart
+             | default('')
+             | regex_replace('^gitea-', '') }}
+      when: gitea_helm_list.rc == 0 and gitea_helm_list.stdout | length > 2
+
+    - name: Skip Gitea — already at target
+      debug:
+        msg: "Gitea already at {{ gitea_chart_version }}"
+      when: gitea_deployed_version | default('') == gitea_chart_version
+
+    - name: Upgrade Gitea chart
+      include_role:
+        name: k3s/gitea
+      when: gitea_deployed_version | default('') != gitea_chart_version
 
 - name: roeden | internal leaf cert renewal
   hosts: k3s-cp1

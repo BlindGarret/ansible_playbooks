@@ -45,6 +45,16 @@
             description: "OpenBao vault_admin Postgres password — backs the database secrets engine"
           - path: "{{ openbao_oidc_client_secret_path }}"
             description: "OpenBao OIDC client secret (shared between Authentik + OpenBao)"
+          - path: "{{ gitea_postgres_password_path }}"
+            description: "Gitea Postgres password"
+          - path: "{{ gitea_oidc_client_secret_path }}"
+            description: "Gitea OIDC client secret (shared between Authentik + Gitea)"
+          - path: "{{ gitea_jwt_secret_path }}"
+            description: "Gitea OAuth2 JWT signing secret"
+          - path: "{{ gitea_secret_key_path }}"
+            description: "Gitea internal SECRET_KEY (encrypts sensitive DB fields)"
+          - path: "{{ gitea_internal_token_path }}"
+            description: "Gitea INTERNAL_TOKEN (auths between Gitea components)"
 
 # Guard for the user-provided Discord webhook URL (used by Alertmanager).
 - name: roeden | require user-provided services secrets
@@ -95,3 +105,6 @@
     # OpenBao reaches postgres-rw via the proxy for its database secrets
     # engine and reaches Authentik for OIDC discovery — both must be up first.
     - role: ../../roles/k3s/openbao
+    # Gitea depends on Authentik (OIDC startup), Postgres (data), Valkey
+    # (cache + session). All three are already up by this point.
+    - role: ../../roles/k3s/gitea

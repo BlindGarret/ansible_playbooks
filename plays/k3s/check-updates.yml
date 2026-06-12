@@ -131,6 +131,17 @@
         openbao_latest_version: "{{ (openbao_index.content | from_yaml).entries['openbao'][0].version }}"
         openbao_current_version: "{{ hostvars[groups['k3s_servers'][0]].openbao_chart_version | regex_replace('^v', '') }}"
 
+    - name: Query Gitea helm repo index
+      uri:
+        url: https://dl.gitea.com/charts/index.yaml
+        return_content: true
+      register: gitea_index
+
+    - name: Stash latest + configured Gitea versions
+      set_fact:
+        gitea_latest_version: "{{ (gitea_index.content | from_yaml).entries['gitea'][0].version }}"
+        gitea_current_version: "{{ hostvars[groups['k3s_servers'][0]].gitea_chart_version | regex_replace('^v', '') }}"
+
     - name: Query Authentik helm repo index
       uri:
         url: https://charts.goauthentik.io/index.yaml
@@ -245,6 +256,10 @@
       set_fact:
         openbao_line: "{{ '%-12s' | format('openbao') }} {{ '%-16s' | format(openbao_current_version) }} {% if openbao_current_version == openbao_latest_version %}(up to date){% else %}(behind, latest {{ openbao_latest_version }}){% endif %}"
 
+    - name: Build Gitea report line
+      set_fact:
+        gitea_line: "{{ '%-12s' | format('gitea') }} {{ '%-16s' | format(gitea_current_version) }} {% if gitea_current_version == gitea_latest_version %}(up to date){% else %}(behind, latest {{ gitea_latest_version }}){% endif %}"
+
     - name: Build Authentik report line
       set_fact:
         authentik_line: "{{ '%-12s' | format('authentik') }} {{ '%-16s' | format(authentik_current_version) }} {% if authentik_current_version == authentik_latest_version %}(up to date){% else %}(behind, latest {{ authentik_latest_version }}){% endif %}"
@@ -259,4 +274,4 @@
 
     - name: Print version drift report
       debug:
-        msg: "{{ ['Latest k3s release: ' ~ k3s_latest_version, 'Latest kube-vip release: ' ~ kubevip_latest_version, 'Latest Traefik chart release: ' ~ traefik_latest_version, 'Latest cert-manager release: ' ~ cert_manager_latest_version, 'Latest Gateway API release: ' ~ gateway_api_latest_version, 'Latest NFS provisioner chart: ' ~ nfs_provisioner_latest_version, 'Latest ArgoCD chart: ' ~ argocd_latest_version, 'Latest kube-prometheus-stack chart: ' ~ kps_latest_version, 'Latest Loki chart: ' ~ loki_latest_version, 'Latest Alloy chart: ' ~ alloy_latest_version, 'Latest Tempo chart: ' ~ tempo_latest_version, 'Latest OpenBao chart: ' ~ openbao_latest_version, 'Latest Authentik chart: ' ~ authentik_latest_version, 'Latest Valkey release: ' ~ valkey_latest_version, 'Latest HAProxy stable: ' ~ haproxy_latest_version, '', 'k3s running versions:'] + ((groups['k3s_servers'] + groups['k3s_agents']) | map('extract', hostvars, 'k3s_version_line') | list) + ['', 'Cluster components (configured):', kubevip_line, traefik_line, cert_manager_line, gateway_api_line, nfs_provisioner_line, argocd_line, kps_line, loki_line, alloy_line, tempo_line, openbao_line, authentik_line, valkey_line, haproxy_line] }}"
+        msg: "{{ ['Latest k3s release: ' ~ k3s_latest_version, 'Latest kube-vip release: ' ~ kubevip_latest_version, 'Latest Traefik chart release: ' ~ traefik_latest_version, 'Latest cert-manager release: ' ~ cert_manager_latest_version, 'Latest Gateway API release: ' ~ gateway_api_latest_version, 'Latest NFS provisioner chart: ' ~ nfs_provisioner_latest_version, 'Latest ArgoCD chart: ' ~ argocd_latest_version, 'Latest kube-prometheus-stack chart: ' ~ kps_latest_version, 'Latest Loki chart: ' ~ loki_latest_version, 'Latest Alloy chart: ' ~ alloy_latest_version, 'Latest Tempo chart: ' ~ tempo_latest_version, 'Latest OpenBao chart: ' ~ openbao_latest_version, 'Latest Gitea chart: ' ~ gitea_latest_version, 'Latest Authentik chart: ' ~ authentik_latest_version, 'Latest Valkey release: ' ~ valkey_latest_version, 'Latest HAProxy stable: ' ~ haproxy_latest_version, '', 'k3s running versions:'] + ((groups['k3s_servers'] + groups['k3s_agents']) | map('extract', hostvars, 'k3s_version_line') | list) + ['', 'Cluster components (configured):', kubevip_line, traefik_line, cert_manager_line, gateway_api_line, nfs_provisioner_line, argocd_line, kps_line, loki_line, alloy_line, tempo_line, openbao_line, gitea_line, authentik_line, valkey_line, haproxy_line] }}"

@@ -49,6 +49,7 @@ authentik:
      lookup('template', 'blueprints/grafana-oidc.yaml.j2')
      ~ lookup('template', 'blueprints/argocd-oidc.yaml.j2')
      ~ lookup('template', 'blueprints/openbao-oidc.yaml.j2')
+     ~ lookup('template', 'blueprints/gitea-oidc.yaml.j2')
    ) | hash('sha256'))[:12] %}
 
 global:
@@ -78,6 +79,10 @@ global:
       mountPath: /blueprints/platform/openbao-oidc.yaml
       subPath: openbao-oidc.yaml
       readOnly: true
+    - name: platform-blueprints
+      mountPath: /blueprints/platform/gitea-oidc.yaml
+      subPath: gitea-oidc.yaml
+      readOnly: true
     - name: apps-blueprints
       mountPath: /blueprints/apps
   env:
@@ -97,6 +102,11 @@ global:
       valueFrom:
         secretKeyRef:
           name: openbao-oidc-secret
+          key: client-secret
+    - name: GITEA_OIDC_CLIENT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: gitea-oidc-secret
           key: client-secret
 
 server:

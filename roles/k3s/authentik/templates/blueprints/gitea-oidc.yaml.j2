@@ -1,0 +1,66 @@
+# Gitea OIDC integration — declarative.
+# Mirror of grafana-oidc.yaml.j2 / argocd-oidc.yaml.j2 / openbao-oidc.yaml.j2.
+# client_secret comes from the GITEA_OIDC_CLIENT_SECRET env var injected
+# into the Authentik pod from the gitea-oidc-secret Secret.
+#
+# Only the external callback URL is registered — Gitea is external-only,
+# see roles/k3s/gitea/templates/values.yaml.j2 for why.
+
+version: 1
+metadata:
+  name: gitea-oidc
+  labels:
+    blueprints.goauthentik.io/instantiate: "true"
+
+entries:
+  - model: authentik_core.group
+    identifiers:
+      name: "{{ gitea_admins_group_name }}"
+    attrs:
+      is_superuser: false
+
+  - model: authentik_providers_oauth2.scopemapping
+    id: gitea-scope-groups
+    identifiers:
+      name: "gitea-scope-groups"
+    attrs:
+      scope_name: "groups"
+      description: "Group names — used by Gitea's adminGroup binding"
+      expression: |
+        return {"groups": [group.name for group in request.user.ak_groups.all()]}
+
+  - model: authentik_providers_oauth2.oauth2provider
+    id: gitea-provider
+    identifiers:
+      name: "gitea-provider"
+    attrs:
+      authorization_flow: !Find [authentik_flows.flow, [slug, "default-provider-authorization-implicit-consent"]]
+      authentication_flow: !Find [authentik_flows.flow, [slug, "default-authentication-flow"]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, "default-provider-invalidation-flow"]]
+      client_type: confidential
+      client_id: "gitea"
+      client_secret: !Env GITEA_OIDC_CLIENT_SECRET
+      access_token_validity: "hours=1"
+      refresh_token_validity: "days=30"
+      grant_types:
+        - "authorization_code"
+        - "refresh_token"
+      redirect_uris:
+        - matching_mode: "strict"
+          url: "https://{{ gitea_hostname }}/user/oauth2/Authentik/callback"
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, "authentik Self-signed Certificate"]]
+      property_mappings:
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, "openid"]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, "profile"]]
+        - !Find [authentik_providers_oauth2.scopemapping, [scope_name, "email"]]
+        - !KeyOf gitea-scope-groups
+
+  - model: authentik_core.application
+    identifiers:
+      slug: "gitea"
+    attrs:
+      name: "Gitea"
+      provider: !KeyOf gitea-provider
+      meta_launch_url: "https://{{ gitea_hostname }}/"
+      policy_engine_mode: all
+      group: ""

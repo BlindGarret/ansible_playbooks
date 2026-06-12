@@ -1,0 +1,8 @@
+---
+# Path on each k3s node where containerd reads its registry config.
+cluster_registry_auth_path: /etc/rancher/k3s/registries.yaml
+
+# Default for the systemd service name when running standalone (overridden
+# by the calling play for k3s_servers vs k3s_agents). k3s servers run the
+# `k3s` service; agents run `k3s-agent`.
+k3s_service_name: k3s
