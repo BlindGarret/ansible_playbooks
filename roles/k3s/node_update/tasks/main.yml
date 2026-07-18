@@ -68,3 +68,17 @@
         kubectl --kubeconfig {{ k3s_kubeconfig_remote }}
         uncordon {{ inventory_hostname }}
       changed_when: true
+
+    # This node's drain evicted its OpenBao pod, which rescheduled onto another
+    # node and came back SEALED (no auto-unseal — Shamir keys are manual). A
+    # single sealed pod trips the openbao PDB (maxUnavailable: 1), so the NEXT
+    # node in the serial roll can't drain and the play deadlocks. Unseal here,
+    # after uncordon, so every node begins its drain with all OpenBao pods
+    # healthy. Idempotent no-op when nothing is sealed (e.g. control planes,
+    # which don't host OpenBao pods). Delegated to a server that has kubeconfig.
+    - name: Unseal any OpenBao pods sealed by this node's drain
+      include_role:
+        name: k3s/openbao
+        tasks_from: unseal.yml
+        apply:
+          delegate_to: "{{ drain_delegate }}"

@@ -4,11 +4,11 @@ k3s_cluster_name: roeden
 # Stable API endpoint
 k3s_api_vip: 192.168.10.20
 kubevip_interface: eth0 
-kubevip_image: "ghcr.io/kube-vip/kube-vip:v1.2.0"
+kubevip_image: "ghcr.io/kube-vip/kube-vip:v1.2.1"
 k3s_api_server_url: "https://{{ k3s_api_vip }}:6443"
 
 # k3s version (pin it; upgrade intentionally)
-k3s_version: "v1.36.1+k3s1"   # example; set to what you want
+k3s_version: "v1.36.2+k3s1"   # example; set to what you want
 
 # k3s cluster join token. Stored in a gitignored local file; lookup runs on
 # the controller, the value is shipped to each node during install.
@@ -19,7 +19,7 @@ k3s_token: "{{ lookup('file', playbook_dir ~ '/' ~ k3s_token_path) | trim }}"
 # Each VM has ~4 GiB RAM; tuning sizes assume that.
 postgres_cluster_name: "roeden-pg"
 postgres_major_version: 18
-postgres_etcd_version: "3.6.12"
+postgres_etcd_version: "3.7.0"
 postgres_superuser_password_path: "../../artifacts/postgres-superuser-password"
 postgres_replication_password_path: "../../artifacts/postgres-replication-password"
 # Postgres tuning
@@ -33,6 +33,10 @@ postgres_max_connections: 200
 patroni_install_dir: /opt/patroni
 patroni_restapi_port: 8008
 postgres_listen_port: 5432
+# pip 'extras' for the patroni install (DCS driver). Must match the setup
+# role's default; mirrored here so the upgrade play (which doesn't include the
+# role) can resolve it too.
+patroni_pip_extras: "etcd3"
 
 # Postgres proxy (HAProxy in k3s, fronting the PG cluster's current leader).
 # Apps connect to postgres-rw.postgres.svc:5432 — never to PG VM IPs directly.
@@ -81,7 +85,7 @@ k3s_taint_control_plane: true
 
 # Traefik ingress (Gateway API + classic Ingress both enabled)
 # Pin to the chart version you want. Check https://github.com/traefik/traefik-helm-chart/releases
-traefik_chart_version: "v40.2.0"
+traefik_chart_version: "v41.0.2"
 traefik_namespace: traefik
 
 # LoadBalancer IPs from the MetalLB pool. Set DNS to these before issuing certs.
@@ -95,11 +99,11 @@ traefik_external_ip: 192.168.10.52
 gitea_ssh_ip: 192.168.10.53
 
 # cert-manager. Check https://github.com/cert-manager/cert-manager/releases
-cert_manager_chart_version: "v1.20.2"
+cert_manager_chart_version: "v1.21.0"
 cert_manager_namespace: cert-manager
 
 # Gateway API CRDs. Check https://github.com/kubernetes-sigs/gateway-api/releases
-gateway_api_version: v1.5.1
+gateway_api_version: v1.6.1
 
 # NFS subdir external provisioner — dynamic PVs backed by a NAS export.
 # Check https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner/releases
@@ -141,14 +145,14 @@ nfs_backup_provisioner_namespace: nfs-backup-provisioner
 nfs_backup_storage_class_name: nfs-backup
 
 # ArgoCD. Check https://github.com/argoproj/argo-helm/releases (filter for argo-cd-*)
-argocd_chart_version: "9.5.19"
+argocd_chart_version: "10.1.4"
 argocd_namespace: argocd
 argocd_hostname: argocd.roeden.lab
 
 # Observability stack. kube-prometheus-stack bundles Prometheus + Alertmanager
 # + Grafana + node-exporter + kube-state-metrics + ServiceMonitor CRDs.
 # Check https://github.com/prometheus-community/helm-charts/releases (filter for kube-prometheus-stack-*)
-kps_chart_version: "86.2.0"
+kps_chart_version: "87.17.0"
 observability_namespace: observability
 grafana_hostname: grafana.roeden.lab
 # Local file containing the Discord webhook URL for Alertmanager notifications.
@@ -162,7 +166,7 @@ grafana_postgres_password_path: "../../artifacts/grafana-postgres-password"
 
 # Loki — log aggregation, single-binary mode, NFS-backed.
 # Check https://github.com/grafana/helm-charts/releases (filter for loki-*)
-loki_chart_version: "7.0.0"
+loki_chart_version: "7.1.0"
 loki_retention_days: 14
 loki_storage_size: 50Gi
 
@@ -170,7 +174,7 @@ loki_storage_size: 50Gi
 # every node and forwards to Loki. Also receives OTLP traces from apps and
 # forwards them to Tempo.
 # Check https://github.com/grafana/helm-charts/releases (filter for alloy-*)
-alloy_chart_version: "1.8.2"
+alloy_chart_version: "1.10.1"
 
 # Grafana Tempo — distributed tracing backend, single-binary mode, NFS-backed.
 # Check https://github.com/grafana/helm-charts/releases (filter for tempo-*)
@@ -191,7 +195,7 @@ valkey_password_path: "../../artifacts/valkey-password"
 # Authentik — central identity provider. Postgres lives on the external HA
 # cluster (via postgres-rw.postgres.svc); cache lives on Valkey (above).
 # Check https://github.com/goauthentik/helm/releases
-authentik_chart_version: "2026.5.2"
+authentik_chart_version: "2026.5.5"
 authentik_namespace: authentik
 authentik_hostname: auth.roeden.lab
 # These two stay constant for the install's lifetime. Generate once with:
@@ -246,7 +250,7 @@ external_gateway_name: external
 # unseal the cluster. Protect it like the CA private key.
 # Chart 0.28.3 bundles OpenBao v2.5.4.
 # Check https://github.com/openbao/openbao-helm/releases
-openbao_chart_version: "0.28.3"
+openbao_chart_version: "0.28.5"
 openbao_hostname: vault.roeden.lab
 openbao_storage_size: 5Gi
 openbao_init_keys_path: "../../artifacts/openbao-init.json"

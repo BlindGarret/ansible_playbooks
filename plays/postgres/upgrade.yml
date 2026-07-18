@@ -35,18 +35,15 @@
     - name: Upgrade etcd on this node
       when: etcd_installed.stdout != postgres_etcd_version
       block:
-        - name: Re-run setup role's etcd tasks (downloads + installs target version)
+        # etcd.yml restarts etcd and already gates on health before returning:
+        # it waits for the local endpoint to report healthy (retries 30 x 5s)
+        # and verifies the cluster still has 3 members. No extra health check is
+        # needed here — and a play-level one can't see the role's default for
+        # etcd_client_port anyway (role defaults don't leak past include_role).
+        - name: Re-run setup role's etcd tasks (downloads + installs target version, waits for rejoin)
           include_role:
             name: postgres/setup
             tasks_from: etcd.yml
-
-        - name: Wait for etcd cluster to be healthy with this node back in
-          shell: /usr/local/bin/etcdctl --endpoints=http://127.0.0.1:{{ etcd_client_port }} endpoint health
-          register: etcd_health_after
-          retries: 30
-          delay: 5
-          until: etcd_health_after.rc == 0
-          changed_when: false
 
 # ---- Phase 2: Patroni pip-package upgrade ----
 - name: roeden | Patroni rolling upgrade
@@ -133,9 +130,11 @@
       run_once: true
       delegate_to: "{{ groups['postgres_servers'][0] }}"
 
+# become: true so patronictl can read /etc/patroni/patroni.yml (0600, owned by
+# postgres) on the delegate — same as the upgrade phases above.
 - name: roeden | post-upgrade cluster status
   hosts: k3s-cp1
-  become: false
+  become: true
   gather_facts: false
   tasks:
     - name: Show patroni cluster state
