@@ -264,3 +264,39 @@
       token_max_ttl=30m
   changed_when: false
   no_log: true
+
+# --- Backup snapshot policy + K8s auth role ----------------------------------
+# Used by the openbao-backup CronJob (templates/backup.yaml.j2) to call
+# `bao operator raft snapshot save`. The CronJob authenticates via its own
+# ServiceAccount in this namespace and exchanges its SA JWT for an OpenBao
+# token carrying `backup-snapshot` — read-only on the snapshot endpoint.
+#
+# Restore (snapshot RESTORE, not save) is intentionally NOT granted — that
+# operation needs root and is a manual, attended action.
+- name: Create backup-snapshot policy
+  shell: |
+    kubectl --kubeconfig {{ openbao_kubeconfig }} -n {{ openbao_namespace }} \
+      exec -i openbao-0 -- \
+      env BAO_TOKEN={{ openbao_root_token }} \
+      bao policy write {{ openbao_backup_policy_name }} - <<'HCL'
+    path "sys/storage/raft/snapshot" {
+      capabilities = ["read"]
+    }
+    HCL
+  changed_when: false
+  no_log: true
+
+- name: Create openbao-backup K8s auth role
+  command: >
+    kubectl --kubeconfig {{ openbao_kubeconfig }}
+    -n {{ openbao_namespace }}
+    exec openbao-0 --
+    env BAO_TOKEN={{ openbao_root_token }}
+    bao write auth/kubernetes/role/{{ openbao_backup_role_name }}
+      bound_service_account_names={{ openbao_backup_sa_name }}
+      bound_service_account_namespaces={{ openbao_namespace }}
+      token_policies={{ openbao_backup_policy_name }}
+      token_ttl=10m
+      token_max_ttl=30m
+  changed_when: false
+  no_log: true

@@ -1,0 +1,125 @@
+# Daily Gitea dump — repos + DB + LFS + attachments + config in one zip,
+# written into a PVC of class nfs-backup. Cloud Sync on the NAS picks the
+# share up nightly and ships it to B2. See README "Backups" for the design.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ gitea_backup_sa_name }}
+  namespace: {{ gitea_namespace }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ gitea_backup_pvc_name }}
+  namespace: {{ gitea_namespace }}
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: {{ nfs_backup_storage_class_name }}
+  resources:
+    requests:
+      storage: {{ gitea_backup_pvc_size }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: gitea-backup
+  namespace: {{ gitea_namespace }}
+spec:
+  schedule: "{{ gitea_backup_schedule }}"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      # Gitea dump can take a while on a populated instance; let the job
+      # run for up to an hour before k8s evicts it.
+      activeDeadlineSeconds: 3600
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: {{ gitea_backup_sa_name }}
+          restartPolicy: OnFailure
+          # Init container does the perm prep as root, then the main
+          # container runs gitea dump as uid 1000 (the only uid gitea will
+          # tolerate). fsGroup at the pod level doesn't propagate reliably
+          # through NFS, so the explicit chown is the bulletproof shape.
+          initContainers:
+            - name: prep
+              image: {{ gitea_backup_prep_image }}
+              securityContext:
+                runAsUser: 0
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -e
+                  # chown the backup PVC mount to gitea's uid:gid so the
+                  # main container can write. Idempotent — re-running on
+                  # an already-correct tree is a no-op chown.
+                  chown -R 1000:1000 /backup
+                  chmod -R u+rwX,g+rwX /backup
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+          containers:
+            - name: dump
+              image: {{ gitea_backup_image }}
+              securityContext:
+                runAsUser: 1000
+                runAsGroup: 1000
+              env:
+                - name: BACKUP_RETENTION_DAYS
+                  value: "{{ gitea_backup_retention_days }}"
+                # gitea expects a writable HOME; pointing at the emptyDir
+                # tmp avoids it trying to write into /root or /data.
+                - name: HOME
+                  value: /tmp
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  DATE=$(date -u +%Y-%m-%d)
+                  mkdir -p /backup/$DATE
+                  TARGET=/backup/$DATE/gitea-dump.zip
+
+                  # gitea dump refuses to overwrite an existing file. Pre-rm
+                  # handles both same-day manual reruns and the recovery case
+                  # where a previous run died mid-write and left a partial.
+                  rm -f $TARGET
+
+                  # `gitea dump` reads /data/gitea/conf/app.ini for the DB
+                  # connection and the data root, then writes a single zip
+                  # containing everything (repos + DB pg_dump + LFS objects +
+                  # attachments + custom files + config). Output goes
+                  # straight to the backup PVC; --tempdir is the emptyDir
+                  # so staging never touches the data PVC or backup share.
+                  gitea dump \
+                    --config /data/gitea/conf/app.ini \
+                    --tempdir /tmp \
+                    --type zip \
+                    --file $TARGET
+
+                  SIZE=$(stat -c%s $TARGET)
+                  echo "dump saved: $TARGET (${SIZE} bytes)"
+
+                  echo "sweeping backups older than $BACKUP_RETENTION_DAYS days"
+                  find /backup -mindepth 1 -maxdepth 1 -type d -mtime +$BACKUP_RETENTION_DAYS -exec rm -rf {} +
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                - name: backup
+                  mountPath: /backup
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            # The same PVC the live gitea pod uses, mounted RWX. We only
+            # read from it, but the chart-created PVC is RW and there's no
+            # subPath isolation, so mounting RW is the practical match.
+            - name: data
+              persistentVolumeClaim:
+                claimName: {{ gitea_backup_data_pvc_name }}
+            - name: backup
+              persistentVolumeClaim:
+                claimName: {{ gitea_backup_pvc_name }}
+            - name: tmp
+              emptyDir: {}

@@ -184,6 +184,39 @@
         name: k3s/nfs_provisioner
       when: nfs_provisioner_deployed_version | default('') != nfs_provisioner_chart_version
 
+- name: roeden | NFS backup provisioner upgrade
+  hosts: k3s-cp1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read deployed NFS backup provisioner chart version
+      command: >
+        helm list -n {{ nfs_backup_provisioner_namespace }}
+        --filter ^nfs-backup-subdir-external-provisioner$
+        --kubeconfig /etc/rancher/k3s/k3s.yaml
+        -o json
+      register: nfs_backup_provisioner_helm_list
+      changed_when: false
+      failed_when: false
+
+    - name: Parse deployed NFS backup provisioner chart version
+      set_fact:
+        nfs_backup_provisioner_deployed_version: >-
+          {{ (nfs_backup_provisioner_helm_list.stdout | from_json | first).chart
+             | default('')
+             | regex_replace('^nfs-subdir-external-provisioner-', '') }}
+      when: nfs_backup_provisioner_helm_list.rc == 0 and nfs_backup_provisioner_helm_list.stdout | length > 2
+
+    - name: Skip NFS backup provisioner — already at target
+      debug:
+        msg: "NFS backup provisioner already at {{ nfs_provisioner_chart_version }}"
+      when: nfs_backup_provisioner_deployed_version | default('') == nfs_provisioner_chart_version
+
+    - name: Upgrade NFS backup provisioner chart
+      include_role:
+        name: k3s/nfs_backup_provisioner
+      when: nfs_backup_provisioner_deployed_version | default('') != nfs_provisioner_chart_version
+
 - name: roeden | ArgoCD upgrade
   hosts: k3s-cp1
   become: true

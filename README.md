@@ -36,7 +36,7 @@ plays/
   k3s/
     bootstrap.yml          # one-time: stand up the k3s cluster from scratch
     ingress.yml            # idempotent: Traefik + cert-manager + Gateways
-    services.yml           # idempotent: NFS + ArgoCD + KPS + Loki + Alloy + Tempo + Authentik + OpenBao + Gitea
+    services.yml           # idempotent: NFS (data + backup) + ArgoCD + KPS + Loki + Alloy + Tempo + Authentik + OpenBao + Gitea
     unseal-openbao.yml     # standalone: re-unseal OpenBao pods after restart/eviction
     reconfigure.yml        # rolling restart for k3s node-level config changes
     check-updates.yml      # READ-ONLY: drift report for every tracked component
@@ -315,6 +315,11 @@ kubectl -n traefik get certificate
 - **Router NAT**: TDS forwards `:80`/`:443` → `192.168.0.22`, EdgeRouter
   forwards same ports → `192.168.10.52` *only when destination is
   `192.168.0.22`* (so internal `.51` traffic isn't hijacked).
+- **Router NAT (SSH)**: TDS forwards `:22` → `192.168.0.22`, EdgeRouter
+  forwards `:22` → `192.168.10.53` (the dedicated Gitea SSH LB IP). SSH
+  carries no Host header, so the routing is by port-to-IP, not by name —
+  if you ever add a second external SSH service it can't share `:22` and
+  has to land on a different port. See "Gitea SSH" below.
 
 ### 10. Install platform services
 
@@ -323,7 +328,12 @@ ansible-playbook -i inventories/roeden/hosts.yml plays/k3s/services.yml
 ```
 
 Everything that lands in this run:
-1. **NFS provisioner** — `StorageClass nfs-client` marked default
+1. **NFS provisioner** — `StorageClass nfs-client` marked default (app data,
+   pointed at `/volume1/appdata`)
+1a. **NFS backup provisioner** — same chart, second instance, emits
+   `StorageClass nfs-backup` (non-default, pointed at
+   `/volume1/roeden-backup`). Apps opt into backup storage by claiming a
+   PVC of this class. See "Backups" section.
 2. **ArgoCD** — Ingress at `argocd.roeden.lab`
 3. **kube-prometheus-stack** — Prometheus + Alertmanager + Grafana,
    Ingress at `grafana.roeden.lab`, Alertmanager pointed at Discord webhook
@@ -347,6 +357,7 @@ Verify:
 ```bash
 kubectl get storageclass
 # nfs-client (default)
+# nfs-backup
 
 kubectl -n argocd get pods
 # All Running
@@ -763,6 +774,75 @@ automatically (via the `groupClaimName` + `adminGroup` config in
 1. Authentik admin UI → `gitea-admins` group → Add `lroe`
 2. Log in to Gitea via the SSO button — admin role applied on first login
 
+### Gitea SSH
+
+`ssh://git@git.roedev.com/<owner>/<repo>.git` — works for both push and
+pull, no PAT required (uses your SSH key uploaded to Gitea profile).
+
+**Why this lives on its own LB IP** (`192.168.10.53`), not on the shared
+Traefik external IP: SSH carries no Host header and isn't wrapped in TLS,
+so there's no SNI either. An L4/L7 proxy receiving port 22 has no way to
+tell which hostname the client intended. Traefik's `HostSNI(...)` TCP
+routers work for protocols that wrap in TLS (LDAPS, IMAPS, etc.) but
+not raw SSH. Host-based routing on SSH simply isn't possible with the
+protocol — so each external SSH-using app needs its own `IP:port`
+endpoint.
+
+In practice that means: Gitea wins the canonical external `:22`. Any
+future external SSH service has to land on a custom port (and you set
+up another router NAT for it). Internal-only SSH services have it
+easier — each gets its own MetalLB LB IP and can listen on standard
+`:22` because internal DNS resolves the hostname to a unique IP.
+
+**Two hostnames, one Gitea — and why:**
+- `git.roedev.com` — HTTPS, the web UI, container/Helm registry. Behind
+  Cloudflare's orange-cloud proxy.
+- `git-ssh.roedev.com` — SSH only. Has its own DNS-only (gray-cloud) A
+  record at Cloudflare because Cloudflare's free tier doesn't proxy raw
+  TCP/22. Gitea's `SSH_DOMAIN` config is set to this so clone URLs the
+  UI displays are correct.
+
+External clones work via `git-ssh.roedev.com` straight out of the box —
+public DNS resolves to the home WAN IP, TDS forwards `:22` to the
+EdgeRouter, EdgeRouter forwards to `192.168.10.53` (the Gitea SSH LB
+IP).
+
+**LAN clones need one per-device `/etc/hosts` line.** The TDS-provided
+ISP router doesn't hairpin its own port-forward for `:22` (works fine
+for `:80`/`:443`, no luck on `:22`), so a LAN client cloning via
+`git-ssh.roedev.com` tries to leave the network and come back, and the
+return packet dies at TDS. The simple workaround is to skip the public
+loop:
+
+```bash
+echo '192.168.10.53 git-ssh.roedev.com' | sudo tee -a /etc/hosts
+```
+
+We tried solving this network-wide via DSM DNS Server split-horizon and
+hit modern-browser DoH (DNS-over-HTTPS) which bypasses any local
+resolver. AdGuard-in-Docker on the NAS would handle it (its DNS
+rewrites work), but the migration is non-trivial and the per-device
+hosts entry is fine for the small set of machines that actually need
+LAN-direct SSH access. Revisit when the new shop is built and the
+router gives us proper hairpin / better DNS control.
+
+**Adding a key to Gitea:** Settings → SSH/GPG Keys → Add Key, paste your
+`~/.ssh/id_ed25519.pub` (or similar). Then:
+
+```bash
+# Clone over SSH (works LAN-direct via /etc/hosts entry above,
+# or via public DNS from anywhere off-LAN)
+git clone git@git-ssh.roedev.com:lroe/myrepo.git
+
+# If you already cloned over HTTPS, switch the remote
+git remote set-url origin git@git-ssh.roedev.com:lroe/myrepo.git
+```
+
+**Host key on first connection:** Gitea generates a fresh ED25519 host
+key at first start and persists it under `/data/git/.ssh/` on the
+data PVC. As long as you don't delete the PVC, the host key is stable
+across pod restarts — `known_hosts` won't churn on you.
+
 ### Push a container image
 
 ```bash
@@ -938,6 +1018,170 @@ ansible-playbook -i inventories/roeden/hosts.yml plays/k3s/reconfigure.yml
 That play re-renders `/etc/k3s-resolv.conf` on every node then rolling-restarts
 k3s with cordon/drain per node. Same pattern as the upgrade play, no
 workload disruption.
+
+---
+
+## Backups
+
+Two-tier backup story, designed around a single platform primitive:
+
+1. **The primitive — `nfs-backup` StorageClass.** A second
+   nfs-subdir-external-provisioner instance, pointed at a separate NAS
+   share (`192.168.0.29:/volume1/roeden-backup`), emits a non-default
+   StorageClass called `nfs-backup`. Any workload that claims a PVC of
+   that class gets a writable subdir on the NAS named
+   `${PVC.namespace}-${PVC.name}/...` (so restore paths are predictable).
+   Apps decide *what* to back up by writing whatever shape of data they
+   want into their backup PVC. The platform doesn't know or care whether
+   it's a pg_dump, a tarball, a raft snapshot, or user-uploaded files.
+2. **The offsite sync — Backblaze B2.** Synology Cloud Sync on the NAS
+   itself replicates the whole share nightly to B2. Survives NAS hardware
+   failure, filesystem corruption, ransomware on the LAN.
+
+Why two StorageClasses (`nfs-client` for app data, `nfs-backup` for
+backups) rather than one shared share with subdirs:
+- Different access posture — backup share has tighter NFS perms, and a
+  typo in a CronJob can never touch live PVC data on `appdata/`.
+- Cloud Sync mirrors the *entire* share it points at, so backups must be
+  in a share you actually want fully shipped offsite. App data isn't.
+- Lets us iterate on backup retention/lifecycle (e.g. B2 lifecycle rules)
+  without affecting the app data share.
+
+### What each subsystem owns
+
+Each subsystem owns its own backup CronJob — there's no central
+coordinator that has to know about all of them. The pattern is always
+the same: claim a `nfs-backup` PVC, mount it, write to it on a schedule,
+sweep old files within it. Backup *follows* the workload it backs up.
+
+| Subsystem | Where the CronJob lives | What lands in the PVC |
+|---|---|---|
+| Per-app Postgres DBs | `roeden-app` chart, opt-in via `backup.enabled` | `<date>/<db>.sql` from pg_dump |
+| OpenBao raft snapshot | `roles/k3s/openbao/` | `<date>/snapshot.snap` from `bao operator raft snapshot save` |
+| Gitea repos+config | `roles/k3s/gitea/` | `<date>/gitea-dump.zip` from `gitea dump` |
+| Authentik blueprints PVC | `roles/k3s/authentik/` | `<date>/blueprints.tar.gz` (mounts blueprints PVC read-only, tars it) |
+
+NAS-side layout looks like:
+```
+/volume1/roeden-backup/
+  mblex-mblex-backup/2026-06-26/mblex.sql
+  openbao-openbao-backup/2026-06-26/snapshot.snap
+  gitea-gitea-backup/2026-06-26/gitea-dump.zip
+  authentik-authentik-blueprints-backup/2026-06-26/blueprints.tar.gz
+```
+
+The per-app pg_dump uses a **static `<db>_backup` Postgres role**
+(read-only on its own DB) created by the chart's `postgres-init` Job
+alongside the dynamic Vault role. Static because the backup auth path
+must outlive any single dynamic lease — backups are the last line of
+defense and we want zero cleverness in their credentials.
+
+**Explicitly NOT backed up** (rebuildable from Git + Helm + the four
+sources above):
+- Observability stack (Prometheus / Loki / Tempo) — operational telemetry
+- Valkey + Authentik Redis — session cache
+- All other charts (ArgoCD, cert-manager, Traefik, MetalLB, NFS provisioner)
+  — declarative, reconstructable
+
+**Explicitly NOT in the cluster** (don't put it in a place the cluster
+backs up — that's circular):
+- `artifacts/openbao-init.json` (5 Shamir unseal keys + root token).
+  Restoring the OpenBao raft snapshot is useless without the unseal keys.
+  Keep them on paper / password manager / offline media — anywhere a
+  cluster compromise can't reach.
+- `artifacts/roeden-ca.key` (internal CA private key). Same posture.
+
+### One-time NAS-side setup (Synology DSM)
+
+The Ansible side knows the destination via `backup_nfs_server` +
+`backup_nfs_path` in `group_vars/all.yml`. The `nfs_backup_provisioner`
+role stands up the second provisioner + StorageClass automatically as
+part of `services.yml`. Everything else on the NAS is DSM UI work —
+Synology doesn't lend itself to remote automation, and Cloud Sync is
+GUI-only.
+
+1. **Create the shared folder.**
+   Control Panel → Shared Folder → Create → name `roeden-backup`.
+   Recommend enabling **Encrypt this shared folder** so the data at rest
+   on the NAS is encrypted; mount it at boot.
+2. **Enable NFS for the share.**
+   Edit shared folder `roeden-backup` → NFS Permissions → Create:
+   - Hostname/IP: `192.168.10.0/24` (the cluster subnet)
+   - Privilege: **Read/Write**
+   - Squash: **No mapping** (provisioner runs as non-root; mapping
+     would break perms)
+   - Security: `sys`
+   - Tick "Allow connections from non-privileged ports"
+3. **Verify the export.** From any k3s node:
+   ```bash
+   showmount -e 192.168.0.29
+   # Expect: /volume1/roeden-backup    192.168.10.0/24
+   sudo mount -t nfs 192.168.0.29:/volume1/roeden-backup /mnt/test
+   sudo touch /mnt/test/__write-test && sudo rm /mnt/test/__write-test
+   sudo umount /mnt/test
+   ```
+4. **Run `services.yml`** — installs the second provisioner and the
+   `nfs-backup` StorageClass. Verify:
+   ```bash
+   kubectl get storageclass
+   # nfs-client (default)
+   # nfs-backup
+   kubectl -n nfs-backup-provisioner get pods
+   # nfs-backup-subdir-external-provisioner-*   Running
+   ```
+5. **Set up the offsite sync (Backblaze B2).**
+   - Sign up for B2, create a bucket (private, server-side encryption on,
+     lifecycle rules of your choosing — e.g. keep last 30 days only,
+     since the local tier is your fast restore path).
+   - Create an Application Key scoped to that bucket only (NOT the
+     master key).
+   - On the NAS: Package Center → install **Cloud Sync** if not already
+     present.
+   - Cloud Sync → `+` → Backblaze B2 → paste keyID and applicationKey →
+     pick the bucket.
+   - Local path: `/roeden-backup` (root of the share).
+   - Sync direction: **Upload local changes only** (one-way to B2).
+   - Schedule: nightly, after the cluster CronJobs are expected to have
+     finished (e.g. 3am if backups run at 1–2am).
+   - **Enable Cloud Sync encryption** for an extra layer at rest in B2.
+     Stash the encryption password with the unseal keys — losing it
+     makes B2 contents unreadable.
+
+### Restore — high-level paths
+
+Restore paths assume you've mounted `/volume1/roeden-backup` somewhere
+and the subdir naming matches the `${namespace}-${pvcname}` pattern.
+
+- **Single Postgres DB (most common):**
+  `psql <app> < /backups/<app>-<app>-backup/<date>/<app>.sql`
+- **OpenBao:** restore the snapshot via
+  `bao operator raft snapshot restore` on a fresh cluster, then unseal
+  using the keys from `artifacts/openbao-init.json`.
+- **Gitea:** un-tar the dump into a fresh Gitea pod's `/data` dir per
+  the [Gitea restore docs](https://docs.gitea.com/help/backup-and-restore).
+  Needs `gitea-secret-key` + `gitea-internal-token` from `artifacts/` to
+  decrypt sensitive DB fields — those live with the CA key (out-of-band).
+- **Authentik blueprints PVC:** un-tar into the `authentik-apps-blueprints`
+  PVC; Authentik picks up the new files on its next scan (or trigger
+  discovery via `ak shell` — see "Authentik blueprints" section).
+
+Restore drills are not automated. Each mechanism should be exercised
+manually at least once after the corresponding CronJob lands, to
+confirm the files produced are actually usable — a backup nobody has
+restored from isn't really a backup.
+
+### Accidentally-deleted PVC safety net
+
+The `nfs-backup` StorageClass is configured with
+`reclaimPolicy: Retain` + `archiveOnDelete: true`. If a backup PVC is
+deleted (helm uninstall, `kubectl delete pvc` typo), the provisioner
+**renames** the subdir to `archived-<original-name>-<pv-name>` rather
+than deleting it. Cloud Sync still mirrors archived dirs to B2.
+
+So the worst case for an accidentally-deleted backup PVC is "you lose
+the ability to write new backups until you re-create the PVC" — never
+"all historical backups are gone." Clean up archived dirs on the NAS by
+hand when you're sure they're not needed.
 
 ---
 

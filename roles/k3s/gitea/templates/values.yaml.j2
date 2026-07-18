@@ -64,6 +64,23 @@ extraVolumeMounts:
 ingress:
   enabled: false
 
+# SSH listener — separate LoadBalancer service on a dedicated MetalLB IP.
+# Can't share the Traefik external IP: SSH carries no Host header and isn't
+# wrapped in TLS, so an L7 proxy has nothing to route on. So SSH gets its own
+# IP:port pair. Router NAT: public TCP/22 → gitea_ssh_ip:22.
+#
+# port: external — what `ssh git@git.roedev.com` connects to (and what shows
+#   up in clone URLs Gitea displays).
+# targetPort: the rootless gitea image's SSH daemon binds to 2222 (can't
+#   bind <1024 as non-root). The Service maps :22 → :2222 on the pod.
+service:
+  ssh:
+    type: LoadBalancer
+    port: 22
+    clusterIP: ""
+    annotations:
+      metallb.universe.tf/loadBalancerIPs: "{{ gitea_ssh_ip }}"
+
 # Sensitive config (DB password + Gitea's internal crypto secrets) come in via
 # env vars from Secrets that tasks/main.yml creates. Gitea reads GITEA__X__Y
 # env vars and uses them to override app.ini sections at startup.
@@ -95,10 +112,28 @@ gitea:
       # Enable the LFS endpoint (Git LFS is built-in and useful even at
       # homelab scale for the occasional large binary in a repo).
       LFS_START_SERVER: true
-      # Disable SSH for now — the chart's bundled SSH server adds complexity
-      # (extra Service, host key management). HTTPS clone works fine.
-      DISABLE_SSH: true
-      SSH_DOMAIN: "{{ gitea_hostname }}"
+      # SSH — bundled openssh server inside the gitea container, exposed via
+      # the LoadBalancer service.ssh block above.
+      #   DISABLE_SSH: false       — turn the daemon on
+      #   START_SSH_SERVER: true   — rootless variant ONLY starts SSH when
+      #                              this is also true; otherwise the
+      #                              container's sshd is dormant even with
+      #                              DISABLE_SSH=false.
+      #   SSH_PORT: 22             — what users type in clone URLs and what
+      #                              Gitea advertises in the UI.
+      #   SSH_LISTEN_PORT: 2222    — what the daemon actually binds to inside
+      #                              the pod (non-root can't bind <1024).
+      #                              Service maps :22 → :2222.
+      #   SSH_DOMAIN               — host shown in displayed clone URLs.
+      DISABLE_SSH: false
+      START_SSH_SERVER: true
+      SSH_PORT: 22
+      SSH_LISTEN_PORT: 2222
+      # Separate hostname for SSH so LAN clients can short-circuit to the
+      # gitea-ssh LB IP without hairpinning the public NAT chain. Public
+      # DNS resolves this hostname to the same WAN IP (via *.roedev.com
+      # wildcard), so external clones using this URL still work normally.
+      SSH_DOMAIN: "{{ gitea_ssh_hostname }}"
 
     database:
       DB_TYPE: postgres

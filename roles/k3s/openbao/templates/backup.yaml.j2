@@ -1,0 +1,97 @@
+# Daily raft snapshot backup — written into a PVC of class nfs-backup.
+# Cloud Sync on the NAS picks the share up nightly and ships it to B2.
+# See README "Backups" for the design.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ openbao_backup_sa_name }}
+  namespace: {{ openbao_namespace }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ openbao_backup_pvc_name }}
+  namespace: {{ openbao_namespace }}
+spec:
+  # RWX so a future on-demand restore-prep pod can mount alongside the
+  # CronJob without conflict. Single-writer (CronJob) is the normal case.
+  accessModes: [ReadWriteMany]
+  storageClassName: {{ nfs_backup_storage_class_name }}
+  resources:
+    requests:
+      storage: {{ openbao_backup_pvc_size }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: openbao-backup
+  namespace: {{ openbao_namespace }}
+spec:
+  schedule: "{{ openbao_backup_schedule }}"
+  # Forbid overlap — a long-running snapshot shouldn't have a successor
+  # racing against it (raft snapshot save is read-only at the storage layer
+  # but the file write is single-flow).
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: {{ openbao_backup_sa_name }}
+          restartPolicy: OnFailure
+          # The provisioner-created NAS subdir is owned by root (the NFS
+          # share is configured with "No mapping" squash, so root in the
+          # pod is root on the NAS). Running the CronJob as root is the
+          # path of least resistance; this isn't a long-running service,
+          # the only thing it does is read sys/storage/raft/snapshot and
+          # write the file out.
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            fsGroup: 0
+          containers:
+            - name: snapshot
+              image: {{ openbao_backup_image }}
+              env:
+                # Plain HTTP — the OpenBao listener has tls_disable=1
+                # (Traefik wraps TLS at the ingress). In-cluster service
+                # name resolves through the standard service DNS.
+                - name: BAO_ADDR
+                  value: "http://openbao.{{ openbao_namespace }}.svc:8200"
+                - name: BACKUP_RETENTION_DAYS
+                  value: "{{ openbao_backup_retention_days }}"
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  DATE=$(date -u +%Y-%m-%d)
+                  mkdir -p /backup/$DATE
+
+                  # Exchange the SA JWT for an OpenBao token carrying the
+                  # backup-snapshot policy. `-field=token` extracts just
+                  # the client_token field; @<path> reads jwt from the SA
+                  # token file mounted by the projected volume k8s gives
+                  # every pod with a SA bound.
+                  export BAO_TOKEN=$(bao write -field=token auth/kubernetes/login \
+                    role={{ openbao_backup_role_name }} \
+                    jwt=@/var/run/secrets/kubernetes.io/serviceaccount/token)
+
+                  bao operator raft snapshot save /backup/$DATE/snapshot.snap
+                  SIZE=$(stat -c%s /backup/$DATE/snapshot.snap)
+                  echo "snapshot saved: /backup/$DATE/snapshot.snap (${SIZE} bytes)"
+
+                  # Retention sweep — delete date dirs older than N days.
+                  # mtime check on the dir itself works because we never
+                  # touch existing dirs after creation.
+                  echo "sweeping backups older than $BACKUP_RETENTION_DAYS days"
+                  find /backup -mindepth 1 -maxdepth 1 -type d -mtime +$BACKUP_RETENTION_DAYS -exec rm -rf {} +
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            - name: backup
+              persistentVolumeClaim:
+                claimName: {{ openbao_backup_pvc_name }}

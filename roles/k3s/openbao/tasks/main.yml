@@ -149,3 +149,20 @@
 
 - name: Configure OpenBao auth methods + database engine
   include_tasks: configure.yml
+
+# Daily raft snapshot backup. Depends on configure.yml having created the
+# openbao-backup K8s auth role + backup-snapshot policy. The k8s manifests
+# (SA, PVC, CronJob) live in templates/backup.yaml.j2.
+- name: Render OpenBao backup manifests
+  template:
+    src: backup.yaml.j2
+    dest: /tmp/openbao-backup.yaml
+    mode: "0644"
+  when: openbao_backup_enabled | bool
+
+- name: Apply OpenBao backup manifests
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ openbao_kubeconfig }}"
+    src: /tmp/openbao-backup.yaml
+  when: openbao_backup_enabled | bool

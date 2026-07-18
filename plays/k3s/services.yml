@@ -90,6 +90,7 @@
   roles:
     - role: ../../roles/k3s/admin_tools
     - role: ../../roles/k3s/nfs_provisioner
+    - role: ../../roles/k3s/nfs_backup_provisioner
     - role: ../../roles/k3s/argocd
     - role: ../../roles/k3s/kube_prometheus_stack
     - role: ../../roles/k3s/loki

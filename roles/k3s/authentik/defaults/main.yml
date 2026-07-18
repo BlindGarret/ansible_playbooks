@@ -5,3 +5,18 @@ authentik_release_name: authentik
 authentik_kubeconfig: /etc/rancher/k3s/k3s.yaml
 authentik_tls_secret_name: internal-tls
 authentik_ingress_class: traefik-internal
+
+# Daily tar of the authentik-apps-blueprints PVC → /backup/YYYY-MM-DD/
+# blueprints.tar.gz on a PVC of class nfs-backup. Authentik's source of
+# truth for declarative app SSO config is what lives in /blueprints/apps/,
+# which is the PVC the apps-channel role mounts. Platform blueprints
+# (rendered from Ansible) survive Git; apps-channel blueprints survive
+# only as long as the PVC does — hence backing them up.
+authentik_backup_enabled: true
+authentik_backup_schedule: "30 2 * * *"          # 02:30 UTC daily
+authentik_backup_retention_days: 30
+authentik_backup_pvc_name: authentik-blueprints-backup
+authentik_backup_pvc_size: 1Gi                   # blueprints are tiny YAML
+authentik_backup_sa_name: authentik-blueprints-backup
+authentik_backup_apps_pvc_name: authentik-apps-blueprints   # chart-owned, the source
+authentik_backup_image: "busybox:1.36"

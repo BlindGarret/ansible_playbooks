@@ -4,3 +4,24 @@ gitea_chart_name: gitea
 gitea_release_name: gitea
 gitea_namespace: gitea
 gitea_kubeconfig: /etc/rancher/k3s/k3s.yaml
+
+# Daily gitea dump → /backup/YYYY-MM-DD/gitea-dump.zip on a PVC of class
+# nfs-backup. The CronJob pod mounts the gitea data PVC alongside the backup
+# PVC and runs the gitea binary; gitea dump reads the existing app.ini (which
+# already has the DB password) and writes a single zip containing repos +
+# database + LFS + attachments + config. No kubectl exec into the live pod.
+gitea_backup_enabled: true
+gitea_backup_schedule: "45 2 * * *"           # 02:45 UTC daily — 30min after openbao
+gitea_backup_retention_days: 30
+gitea_backup_pvc_name: gitea-backup
+gitea_backup_pvc_size: 50Gi                   # matches the gitea data PVC ceiling
+gitea_backup_sa_name: gitea-backup
+gitea_backup_data_pvc_name: gitea-shared-storage   # what the chart names it
+# Rootless Gitea variant — the gitea binary refuses to run as uid 0 (hard
+# coded check in setting.go), so we have to run as uid 1000 (which matches
+# the data PVC's owner) regardless. A small busybox init container chowns
+# the backup PVC root to gid 1000 before the main container starts;
+# kubelet's fsGroup doesn't recurse reliably on NFS volumes, so the init
+# container is the bulletproof path.
+gitea_backup_image: "docker.gitea.com/gitea:1.26.1-rootless"
+gitea_backup_prep_image: "busybox:1.36"

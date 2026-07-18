@@ -193,3 +193,20 @@
     ak shell -c
     "from authentik.blueprints.v1.tasks import blueprints_discovery; blueprints_discovery.send()"
   changed_when: true
+
+# Daily backup CronJob for the apps-channel blueprints PVC. SA + PVC +
+# CronJob live in templates/backup.yaml.j2. Platform-channel blueprints
+# survive in Git; apps-channel ones survive only here.
+- name: Render Authentik blueprints backup manifests
+  template:
+    src: backup.yaml.j2
+    dest: /tmp/authentik-backup.yaml
+    mode: "0644"
+  when: authentik_backup_enabled | bool
+
+- name: Apply Authentik blueprints backup manifests
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ authentik_kubeconfig }}"
+    src: /tmp/authentik-backup.yaml
+  when: authentik_backup_enabled | bool

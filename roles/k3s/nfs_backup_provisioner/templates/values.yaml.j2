@@ -1,0 +1,31 @@
+# nfs-subdir-external-provisioner chart values — second instance, dedicated
+# to backups. Same chart as the primary nfs-client provisioner but points at
+# a different NAS share and emits a different StorageClass.
+nfs:
+  server: "{{ backup_nfs_server }}"
+  path: "{{ backup_nfs_path }}"
+
+storageClass:
+  name: "{{ nfs_backup_storage_class_name }}"
+  # NEVER the default class — apps must explicitly opt into backup storage.
+  # An accidental default here would silently route routine PVCs (app data,
+  # cache) into the backup share and balloon B2 costs.
+  defaultClass: false
+  # Delete + archiveOnDelete is the combo that gives us the "safety net"
+  # behavior: on PVC delete, the provisioner RENAMES the subdir to
+  # `archived-<original>-<pv-name>` rather than rm-rfing it. The PV gets
+  # cleaned up in k8s state, but the data on the NAS survives. Cloud Sync
+  # continues to mirror archived dirs to B2.
+  #
+  # NOT Retain: with Retain, k8s never reclaims the PV (it sits Released
+  # forever), and the provisioner never gets the delete event — so
+  # archiveOnDelete is a no-op. Retain + archive looks safer on paper but
+  # actually delivers no safety net behavior, just orphan PVs.
+  reclaimPolicy: Delete
+  archiveOnDelete: true
+  allowVolumeExpansion: true
+  # Subdir naming on the NAS — restore-friendly, e.g.
+  #   /volume1/roeden-backup/mblex-mblex-backup/2026-06-26/mblex.sql
+  # Default would tack on the PV name (random suffix); we strip that so
+  # restore-time grep is straightforward.
+  pathPattern: "${.PVC.namespace}-${.PVC.name}"

@@ -142,3 +142,20 @@
             backendRefs:
               - name: gitea-http
                 port: 3000
+
+# Daily backup CronJob — SA + PVC + CronJob. The CronJob mounts the gitea
+# data PVC alongside a fresh nfs-backup PVC and runs `gitea dump` against
+# the same app.ini the live pod uses. See templates/backup.yaml.j2.
+- name: Render Gitea backup manifests
+  template:
+    src: backup.yaml.j2
+    dest: /tmp/gitea-backup.yaml
+    mode: "0644"
+  when: gitea_backup_enabled | bool
+
+- name: Apply Gitea backup manifests
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: "{{ gitea_kubeconfig }}"
+    src: /tmp/gitea-backup.yaml
+  when: gitea_backup_enabled | bool

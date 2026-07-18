@@ -1,0 +1,87 @@
+# Daily tar of the authentik-apps-blueprints PVC. The platform-channel
+# blueprints (rendered from this repo's templates/blueprints/) live in Git
+# already; the apps-channel blueprints (custom apps writing their own SSO
+# config at deploy time) only live on the PVC. This CronJob backs them up.
+# See README "Backups" for the design.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ authentik_backup_sa_name }}
+  namespace: {{ authentik_namespace }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ authentik_backup_pvc_name }}
+  namespace: {{ authentik_namespace }}
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: {{ nfs_backup_storage_class_name }}
+  resources:
+    requests:
+      storage: {{ authentik_backup_pvc_size }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: authentik-blueprints-backup
+  namespace: {{ authentik_namespace }}
+spec:
+  schedule: "{{ authentik_backup_schedule }}"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          serviceAccountName: {{ authentik_backup_sa_name }}
+          restartPolicy: OnFailure
+          # Run as root — the blueprints PVC dir is root-owned (the
+          # chart-created mount), root reads anything. The backup PVC
+          # subdir is also root-owned by the provisioner; root writes
+          # there fine. No init container needed.
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          containers:
+            - name: tar
+              image: {{ authentik_backup_image }}
+              env:
+                - name: BACKUP_RETENTION_DAYS
+                  value: "{{ authentik_backup_retention_days }}"
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -e
+                  DATE=$(date -u +%Y-%m-%d)
+                  mkdir -p /backup/$DATE
+                  TARGET=/backup/$DATE/blueprints.tar.gz
+
+                  # tar with -C so paths are relative to /blueprints, not
+                  # absolute — makes the archive portable for restore into
+                  # any blueprints PVC. --exclude lost+found in case the
+                  # FS ever exposes one.
+                  tar czf $TARGET -C /blueprints --exclude='lost+found' .
+
+                  SIZE=$(stat -c%s $TARGET)
+                  COUNT=$(tar tzf $TARGET | wc -l)
+                  echo "tar saved: $TARGET (${SIZE} bytes, ${COUNT} entries)"
+
+                  echo "sweeping backups older than $BACKUP_RETENTION_DAYS days"
+                  find /backup -mindepth 1 -maxdepth 1 -type d -mtime +$BACKUP_RETENTION_DAYS -exec rm -rf {} +
+              volumeMounts:
+                - name: blueprints
+                  mountPath: /blueprints
+                  readOnly: true
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            - name: blueprints
+              persistentVolumeClaim:
+                claimName: {{ authentik_backup_apps_pvc_name }}
+            - name: backup
+              persistentVolumeClaim:
+                claimName: {{ authentik_backup_pvc_name }}

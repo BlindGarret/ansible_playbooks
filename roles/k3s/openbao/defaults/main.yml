@@ -11,3 +11,22 @@ openbao_ingress_class: traefik-internal
 # (openbao-0 .. openbao-N-1) in the init/unseal logic. Keep in sync with
 # server.ha.replicas in templates/values.yaml.j2.
 openbao_pod_count: 3
+
+# Daily raft snapshot backup → /backup/YYYY-MM-DD/snapshot.snap on a PVC of
+# class nfs-backup (the platform's backup StorageClass). See README "Backups".
+# The CronJob authenticates to OpenBao via K8s SA auth using the
+# openbao-backup role created in configure.yml; that role grants read on
+# sys/storage/raft/snapshot and nothing else.
+openbao_backup_enabled: true
+openbao_backup_schedule: "15 2 * * *"            # 02:15 UTC daily
+openbao_backup_retention_days: 30
+openbao_backup_pvc_name: openbao-backup
+openbao_backup_pvc_size: 5Gi                     # snapshots are <100MB typically
+openbao_backup_sa_name: openbao-backup
+openbao_backup_role_name: openbao-backup         # K8s auth role name inside OpenBao
+openbao_backup_policy_name: backup-snapshot      # OpenBao policy name
+# The CLI image for the CronJob — same family as the chart's StatefulSet but
+# pinned independently here. Bump when the chart's image rev moves; the bao
+# CLI is generally backwards-compatible with older servers, so drift is OK
+# in either direction.
+openbao_backup_image: "openbao/openbao:2.5.4"

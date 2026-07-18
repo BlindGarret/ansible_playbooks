@@ -87,6 +87,12 @@ traefik_namespace: traefik
 # LoadBalancer IPs from the MetalLB pool. Set DNS to these before issuing certs.
 traefik_internal_ip: 192.168.10.51
 traefik_external_ip: 192.168.10.52
+# Gitea SSH (git push/pull over ssh://git@git.roedev.com). On its own LB IP
+# rather than sharing one of the Traefik IPs because SSH isn't HTTP — Traefik
+# can't host-route raw SSH (no Host header, no SNI in the protocol), so the
+# SSH listener has to live on its own IP:port pair. See README "Gitea SSH".
+# Router NAT: public :22 → 192.168.10.53.
+gitea_ssh_ip: 192.168.10.53
 
 # cert-manager. Check https://github.com/cert-manager/cert-manager/releases
 cert_manager_chart_version: "v1.20.2"
@@ -103,6 +109,36 @@ nfs_server: "192.168.0.29"
 nfs_path: "/volume1/appdata"
 nfs_storage_class_name: nfs-client
 nfs_default_storage_class: true
+
+# Backup destination — second NFS share on the same NAS, dedicated to
+# backups. Cluster workloads (per-app pg_dump via roeden-app chart;
+# OpenBao raft snapshot, Gitea dump, Authentik blueprints tar via the
+# backup-janitor app) write here. Synology Cloud Sync on the NAS itself
+# replicates this share nightly to Backblaze B2 for offsite.
+#
+# Layout under the share: /<source>/YYYY-MM-DD/<file>
+#   /postgres/2026-06-26/mblex.sql
+#   /openbao/2026-06-26/snapshot.snap
+#   /gitea/2026-06-26/gitea-dump.zip
+#   /authentik-blueprints/2026-06-26/blueprints.tar.gz
+#
+# Kept separate from nfs_path so the perms posture can be tighter (only
+# the cluster's backup workloads need rw here) and so a typo in a janitor
+# CronJob can't ever touch live PVC data on /volume1/appdata.
+#
+# See README "Backups" for the one-time NAS-side setup (shared folder,
+# NFS export perms, Cloud Sync → B2).
+backup_nfs_server: "192.168.0.29"
+backup_nfs_path: "/volume1/roeden-backup"
+
+# Backup StorageClass — second nfs-subdir-external-provisioner instance,
+# pointed at backup_nfs_path. Apps opt into backups by claiming PVCs of
+# storageClassName `nfs-backup`. Subdir naming on the NAS is
+# `${PVC.namespace}-${PVC.name}` so restore-time paths are predictable.
+# Same chart as the primary provisioner (nfs_provisioner_chart_version) —
+# the two installs always move in lockstep.
+nfs_backup_provisioner_namespace: nfs-backup-provisioner
+nfs_backup_storage_class_name: nfs-backup
 
 # ArgoCD. Check https://github.com/argoproj/argo-helm/releases (filter for argo-cd-*)
 argocd_chart_version: "9.5.19"
@@ -230,6 +266,12 @@ openbao_admins_group_name: "openbao-admins"
 # Check https://gitea.com/gitea/helm-gitea/releases
 gitea_chart_version: "12.6.0"
 gitea_hostname: git.roedev.com
+# Separate hostname for the SSH endpoint so LAN clients can resolve it
+# straight to gitea_ssh_ip without going through Cloudflare and the public
+# NAT chain (TDS doesn't hairpin :22 reliably). Public DNS already covers
+# this via the wildcard *.roedev.com A record. Gitea displays this in the
+# UI's clone URLs for SSH, so users land on the right hostname automatically.
+gitea_ssh_hostname: git-ssh.roedev.com
 gitea_storage_size: 50Gi
 gitea_admins_group_name: "gitea-admins"
 gitea_postgres_password_path: "../../artifacts/gitea-postgres-password"
